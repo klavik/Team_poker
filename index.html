@@ -257,16 +257,18 @@
     <div id="memberEditor">
       <h3>Добавить участника</h3>
 
-      <div class="two-columns">
-        <div>
-          <label for="memberName">Имя</label>
-          <input id="memberName" placeholder="Иван Иванов">
-        </div>
-        <div>
-          <label for="memberEmail">Email</label>
-          <input id="memberEmail" type="email" placeholder="name@company.ru">
-        </div>
+      <label for="memberUserSelect">Пользователь Firebase</label>
+      <select id="memberUserSelect">
+        <option value="">Загрузка пользователей...</option>
+      </select>
+
+      <div class="muted small">
+        В списке отображаются пользователи Firebase Authentication,
+        которые хотя бы один раз вошли в Planning Poker после обновления.
       </div>
+
+      <label for="memberName">Отображаемое имя в команде</label>
+      <input id="memberName" placeholder="Можно указать удобное имя">
 
       <label for="memberRole">Роль</label>
       <select id="memberRole">
