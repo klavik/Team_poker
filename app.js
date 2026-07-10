@@ -321,11 +321,11 @@ async function init() {
     if (user) {
       clearAllListeners();
 
+      // Каталог и команды не должны зависеть от успешности записи профиля.
+      startTeamsListener();
+      startUsersDirectoryListener();
+
       ensureCurrentUserProfile()
-        .then(() => {
-          startTeamsListener();
-          startUsersDirectoryListener();
-        })
         .catch(error => handleError(error));
     } else {
       clearAllListeners();
@@ -399,7 +399,7 @@ function bindEvents() {
 }
 
 async function ensureCurrentUserProfile() {
-  const email = normalizeEmail(currentUser?.email);
+  const email = String(currentUser?.email || "").trim();
   if (!currentUser || !email) return;
 
   await setDoc(
@@ -452,28 +452,74 @@ function availableDirectoryUsers() {
 
 function renderAvailableUsers() {
   const select = $("memberUserSelect");
+  const status = $("memberDirectoryStatus");
+
   if (!select) return;
 
   const previousUid = select.value;
-  const users = availableDirectoryUsers();
+  const memberEmails = new Set(
+    state.members.map(member => normalizeEmail(member.email))
+  );
 
-  select.innerHTML = users.length
-    ? users.map(user => {
-        const name = user.displayName || user.email;
-        return `
-          <option value="${escapeHtml(user.uid || user.id)}">
-            ${escapeHtml(name)} — ${escapeHtml(user.email)}
-          </option>
-        `;
-      }).join("")
-    : '<option value="">Нет доступных пользователей</option>';
+  const allUsers = state.directoryUsers;
+  const availableUsers = allUsers.filter(
+    user => !memberEmails.has(normalizeEmail(user.email))
+  );
+  const existingCount = allUsers.length - availableUsers.length;
 
-  if (users.some(user => (user.uid || user.id) === previousUid)) {
-    select.value = previousUid;
+  if (!allUsers.length) {
+    select.innerHTML = `
+      <option value="">
+        Каталог пуст — пользователям нужно войти после обновления
+      </option>
+    `;
+    select.disabled = true;
+    $("addMemberBtn").disabled = true;
+
+    if (status) {
+      status.textContent =
+        "В каталоге пока нет пользователей. Каждый пользователь должен открыть обновлённое приложение и войти хотя бы один раз.";
+    }
+
+    fillSelectedMemberName();
+    return;
   }
 
-  select.disabled = users.length === 0;
-  $("addMemberBtn").disabled = users.length === 0 || !isLead();
+  const options = [
+    '<option value="">Выберите пользователя</option>',
+    ...allUsers.map(user => {
+      const uid = user.uid || user.id;
+      const name = user.displayName || user.email;
+      const alreadyMember = memberEmails.has(normalizeEmail(user.email));
+
+      return `
+        <option
+          value="${escapeHtml(uid)}"
+          ${alreadyMember ? "disabled" : ""}
+        >
+          ${escapeHtml(name)} — ${escapeHtml(user.email)}
+          ${alreadyMember ? " (уже в команде)" : ""}
+        </option>
+      `;
+    })
+  ];
+
+  select.innerHTML = options.join("");
+  select.disabled = availableUsers.length === 0;
+
+  if (availableUsers.some(user => (user.uid || user.id) === previousUid)) {
+    select.value = previousUid;
+  } else {
+    select.value = "";
+  }
+
+  $("addMemberBtn").disabled = availableUsers.length === 0 || !isLead();
+
+  if (status) {
+    status.textContent = availableUsers.length
+      ? `В каталоге: ${allUsers.length}. Уже в команде: ${existingCount}. Доступно для добавления: ${availableUsers.length}.`
+      : `В каталоге: ${allUsers.length}. Все зарегистрированные пользователи уже состоят в этой команде.`;
+  }
 
   fillSelectedMemberName();
 }
