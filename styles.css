@@ -322,3 +322,132 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .poker-grid { grid-template-columns: repeat(3, 1fr); }
   .member-row { grid-template-columns: minmax(0, 1fr) 95px 38px; }
 }
+
+
+/* История раундов */
+.round-history-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.round-history-item {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.round-history-item summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.round-history-item summary::-webkit-details-marker {
+  display: none;
+}
+
+.round-history-item summary::before {
+  content: "›";
+  flex: 0 0 auto;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.round-history-item[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.round-history-item summary > span:first-of-type {
+  min-width: 0;
+  flex: 1;
+}
+
+.history-summary {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.history-final {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.history-final.empty {
+  background: #eef1f6;
+  color: var(--muted);
+}
+
+.round-history-body {
+  padding: 0 14px 14px 50px;
+}
+
+.history-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.history-metrics > div {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.history-metrics span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-metrics strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 17px;
+}
+
+.history-votes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.history-vote {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .round-history-item summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .history-final {
+    margin-left: 34px;
+  }
+
+  .round-history-body {
+    padding-left: 14px;
+  }
+}

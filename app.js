@@ -54,7 +54,9 @@ const state = {
   issue: null,
   voteStatuses: [],
   votes: [],
-  myVote: null
+  myVote: null,
+  rounds: [],
+  historicalVotes: []
 };
 
 let firebaseApp = null;
@@ -69,6 +71,7 @@ let unsubscribeIssues = null;
 let unsubscribeOwnVote = null;
 let unsubscribeVoteStatuses = null;
 let unsubscribeVotes = null;
+let unsubscribeRounds = null;
 let activeVoteSubscriptionKey = null;
 
 const $ = id => document.getElementById(id);
@@ -245,15 +248,19 @@ function clearVoteListeners() {
   unsubscribe(unsubscribeOwnVote);
   unsubscribe(unsubscribeVoteStatuses);
   unsubscribe(unsubscribeVotes);
+  unsubscribe(unsubscribeRounds);
 
   unsubscribeOwnVote = null;
   unsubscribeVoteStatuses = null;
   unsubscribeVotes = null;
+  unsubscribeRounds = null;
   activeVoteSubscriptionKey = null;
 
   state.voteStatuses = [];
   state.votes = [];
   state.myVote = null;
+  state.rounds = [];
+  state.historicalVotes = [];
 }
 
 function clearIssueListener() {
@@ -443,7 +450,9 @@ function resetState() {
     issue: null,
     voteStatuses: [],
     votes: [],
-    myVote: null
+    myVote: null,
+    rounds: [],
+    historicalVotes: []
   });
 
   renderTeams();
@@ -1080,6 +1089,20 @@ function startVoteListeners() {
     error => handleError(error)
   );
 
+  unsubscribeRounds = onSnapshot(
+    collection(db, ...issueBase, "rounds"),
+    { includeMetadataChanges: true },
+    snapshot => {
+      state.rounds = snapshot.docs
+        .map(roundDoc => ({ id: roundDoc.id, ...roundDoc.data() }))
+        .sort((a, b) => Number(b.round) - Number(a.round));
+      renderRoundHistory();
+    },
+    error => handleError(error)
+  );
+
+  loadLegacyHistoricalVotes().catch(error => handleError(error));
+
   if (["revealed", "estimated"].includes(state.issue.status)) {
     const votesQuery = query(
       collection(db, ...issueBase, "votes"),
@@ -1097,6 +1120,255 @@ function startVoteListeners() {
       error => handleError(error)
     );
   }
+}
+
+
+function issueBasePath(issueId = state.issue?.id) {
+  return [
+    "teams", state.teamId,
+    "sessions", state.sessionId,
+    "issues", issueId
+  ];
+}
+
+function votesCollectionRef(issueId = state.issue?.id) {
+  return collection(db, ...issueBasePath(issueId), "votes");
+}
+
+function roundDocumentRef(round, issueId = state.issue?.id) {
+  return doc(db, ...issueBasePath(issueId), "rounds", String(round));
+}
+
+function calculateVoteStats(votes) {
+  const values = votes
+    .map(vote => Number(vote.value))
+    .filter(value => Number.isFinite(value))
+    .sort((a, b) => a - b);
+
+  if (!values.length) return null;
+
+  const middle = Math.floor(values.length / 2);
+
+  return {
+    min: values[0],
+    max: values[values.length - 1],
+    median: values.length % 2
+      ? values[middle]
+      : (values[middle - 1] + values[middle]) / 2
+  };
+}
+
+async function loadLegacyHistoricalVotes() {
+  state.historicalVotes = [];
+
+  if (!state.issue) {
+    renderRoundHistory();
+    return;
+  }
+
+  const currentRound = Number(state.issue.currentRound);
+  if (currentRound <= 1) {
+    renderRoundHistory();
+    return;
+  }
+
+  const historical = [];
+
+  for (let round = 1; round < currentRound; round += 1) {
+    const snapshot = await getDocs(
+      query(
+        votesCollectionRef(),
+        where("round", "==", round)
+      )
+    );
+
+    snapshot.docs.forEach(voteDoc => {
+      historical.push({ id: voteDoc.id, ...voteDoc.data() });
+    });
+  }
+
+  state.historicalVotes = historical;
+  renderRoundHistory();
+}
+
+async function buildRoundSnapshot(round, status, finalEstimate = null) {
+  const votesSnapshot = await getDocs(
+    query(
+      votesCollectionRef(),
+      where("round", "==", Number(round))
+    )
+  );
+
+  const votes = votesSnapshot.docs
+    .map(voteDoc => ({ id: voteDoc.id, ...voteDoc.data() }))
+    .sort((a, b) => timestampValue(a.updatedAt) - timestampValue(b.updatedAt));
+
+  const stats = calculateVoteStats(votes);
+  const roundRef = roundDocumentRef(round);
+  const existingSnapshot = await getDoc(roundRef);
+  const existing = existingSnapshot.exists() ? existingSnapshot.data() : {};
+
+  const payload = {
+    round: Number(round),
+    status,
+    votes: votes.map(vote => ({
+      userId: vote.userId,
+      voterEmail: vote.voterEmail,
+      value: Number(vote.value)
+    })),
+    voteCount: votes.length,
+    min: stats?.min ?? null,
+    median: stats?.median ?? null,
+    max: stats?.max ?? null,
+    finalEstimate: finalEstimate ?? existing.finalEstimate ?? null,
+    revealedAt: existing.revealedAt || serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  if (status === "finalized") {
+    payload.finalizedAt = serverTimestamp();
+  }
+
+  return payload;
+}
+
+function formatHistoryDate(value) {
+  const milliseconds = timestampValue(value);
+  if (!milliseconds) return "";
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(new Date(milliseconds));
+}
+
+function renderRoundHistory() {
+  const card = $("historyCard");
+  const root = $("roundHistoryList");
+
+  if (!card || !root || !state.issue) {
+    if (card) show(card, false);
+    return;
+  }
+
+  const roundsByNumber = new Map();
+
+  for (const archived of state.rounds) {
+    const round = Number(archived.round);
+    roundsByNumber.set(round, {
+      ...archived,
+      round,
+      votes: Array.isArray(archived.votes) ? archived.votes : []
+    });
+  }
+
+  for (const vote of state.historicalVotes) {
+    const round = Number(vote.round);
+    const item = roundsByNumber.get(round) || {
+      round,
+      status: "legacy",
+      votes: [],
+      finalEstimate: null
+    };
+
+    if (!item.votes.some(existing => existing.userId === vote.userId)) {
+      item.votes.push(vote);
+    }
+
+    roundsByNumber.set(round, item);
+  }
+
+  if (["revealed", "estimated"].includes(state.issue.status)) {
+    const round = Number(state.issue.currentRound);
+    const existing = roundsByNumber.get(round) || {
+      round,
+      status: state.issue.status === "estimated" ? "finalized" : "revealed",
+      votes: []
+    };
+
+    if (!existing.votes.length && state.votes.length) {
+      existing.votes = state.votes;
+    }
+
+    if (state.issue.finalEstimate != null) {
+      existing.finalEstimate = Number(state.issue.finalEstimate);
+    }
+
+    roundsByNumber.set(round, existing);
+  }
+
+  const rounds = [...roundsByNumber.values()]
+    .filter(item => item.votes.length || item.finalEstimate != null || item.revealedAt)
+    .sort((a, b) => b.round - a.round);
+
+  show(card, rounds.length > 0);
+
+  if (!rounds.length) {
+    root.innerHTML = "";
+    return;
+  }
+
+  const memberByEmail = Object.fromEntries(
+    state.members.map(member => [member.email, member])
+  );
+
+  root.innerHTML = rounds.map((item, index) => {
+    const stats = calculateVoteStats(item.votes);
+    const finalEstimate = item.finalEstimate != null
+      ? Number(item.finalEstimate)
+      : null;
+
+    const date = formatHistoryDate(item.finalizedAt || item.revealedAt);
+    const votesHtml = item.votes.length
+      ? item.votes
+          .slice()
+          .sort((a, b) => Number(a.value) - Number(b.value))
+          .map(vote => {
+            const name = memberByEmail[vote.voterEmail]?.displayName || vote.voterEmail;
+            return `
+              <span class="history-vote">
+                ${escapeHtml(name)} — <strong>${Number(vote.value)} ч.д.</strong>
+              </span>
+            `;
+          })
+          .join("")
+      : '<span class="muted small">Голоса не найдены.</span>';
+
+    return `
+      <details class="round-history-item" ${index === 0 ? "open" : ""}>
+        <summary>
+          <span>
+            <strong>Раунд ${item.round}</strong>
+            <span class="history-summary">
+              ${item.votes.length} голосов
+              ${date ? ` · ${escapeHtml(date)}` : ""}
+            </span>
+          </span>
+          <span class="history-final ${finalEstimate == null ? "empty" : ""}">
+            ${finalEstimate == null ? "Итог не зафиксирован" : `Итог: ${finalEstimate} ч.д.`}
+          </span>
+        </summary>
+
+        <div class="round-history-body">
+          <div class="history-metrics">
+            <div><span>Минимум</span><strong>${stats?.min ?? "—"}</strong></div>
+            <div><span>Медиана</span><strong>${stats?.median ?? "—"}</strong></div>
+            <div><span>Максимум</span><strong>${stats?.max ?? "—"}</strong></div>
+          </div>
+
+          <div class="history-votes">
+            ${votesHtml}
+          </div>
+
+          ${
+            item.status === "legacy"
+              ? '<div class="muted small">Раунд создан до появления журнала итоговых оценок.</div>'
+              : ""
+          }
+        </div>
+      </details>
+    `;
+  }).join("");
 }
 
 function renderPokerCards() {
@@ -1163,6 +1435,7 @@ function renderIssue() {
 
   renderLeadIssueActions();
   renderResults();
+  renderRoundHistory();
 
   $("finalEstimate").value = issue.finalEstimate || suggestedEstimate() || "";
   $("finalizeBtn").disabled = !isLead() || !["revealed", "estimated"].includes(issue.status);
@@ -1238,23 +1511,52 @@ async function issueAction(action) {
     return;
   }
 
-  let patch = null;
-
-  if (action === "start") patch = { status: "voting", updatedAt: serverTimestamp() };
-  if (action === "reveal") patch = { status: "revealed", updatedAt: serverTimestamp() };
-  if (action === "new-round") {
-    patch = {
-      status: "voting",
-      currentRound: Number(state.issue.currentRound) + 1,
-      finalEstimate: null,
-      updatedAt: serverTimestamp()
-    };
-  }
-
-  if (!patch) return;
-
   try {
-    await updateDoc(currentIssueRef(), patch);
+    if (action === "start") {
+      await updateDoc(currentIssueRef(), {
+        status: "voting",
+        updatedAt: serverTimestamp()
+      });
+      return;
+    }
+
+    if (action === "reveal") {
+      const round = Number(state.issue.currentRound);
+
+      // Сначала открываем раунд, чтобы правила разрешили тимлиду прочитать все голоса.
+      await updateDoc(currentIssueRef(), {
+        status: "revealed",
+        updatedAt: serverTimestamp()
+      });
+
+      const snapshot = await buildRoundSnapshot(round, "revealed", null);
+      await setDoc(roundDocumentRef(round), snapshot, { merge: true });
+      return;
+    }
+
+    if (action === "new-round") {
+      const round = Number(state.issue.currentRound);
+      const archiveStatus = state.issue.status === "estimated"
+        ? "finalized"
+        : "revealed";
+
+      const snapshot = await buildRoundSnapshot(
+        round,
+        archiveStatus,
+        state.issue.finalEstimate ?? null
+      );
+
+      const batch = writeBatch(db);
+      batch.set(roundDocumentRef(round), snapshot, { merge: true });
+      batch.update(currentIssueRef(), {
+        status: "voting",
+        currentRound: round + 1,
+        finalEstimate: null,
+        updatedAt: serverTimestamp()
+      });
+
+      await batch.commit();
+    }
   } catch (error) {
     handleError(error);
   }
@@ -1300,21 +1602,7 @@ async function castVote(value) {
 }
 
 function voteStats() {
-  const values = state.votes
-    .map(vote => Number(vote.value))
-    .sort((a, b) => a - b);
-
-  if (!values.length) return null;
-
-  const middle = Math.floor(values.length / 2);
-
-  return {
-    min: values[0],
-    max: values[values.length - 1],
-    median: values.length % 2
-      ? values[middle]
-      : (values[middle - 1] + values[middle]) / 2
-  };
+  return calculateVoteStats(state.votes);
 }
 
 function suggestedEstimate() {
@@ -1367,12 +1655,19 @@ async function finalizeEstimate() {
   }
 
   try {
-    await updateDoc(currentIssueRef(), {
+    const round = Number(state.issue.currentRound);
+    const snapshot = await buildRoundSnapshot(round, "finalized", value);
+
+    const batch = writeBatch(db);
+    batch.set(roundDocumentRef(round), snapshot, { merge: true });
+    batch.update(currentIssueRef(), {
       finalEstimate: value,
       status: "estimated",
       updatedAt: serverTimestamp()
     });
-    toast("Итоговая оценка сохранена.", "success");
+
+    await batch.commit();
+    toast("Итоговая оценка и история раунда сохранены.", "success");
   } catch (error) {
     handleError(error, target);
   }
@@ -1470,6 +1765,7 @@ async function deleteIssueRecursive(teamId, sessionId, issueId) {
 
   await deleteCollectionRefs(collection(issueRef, "votes"));
   await deleteCollectionRefs(collection(issueRef, "vote_status"));
+  await deleteCollectionRefs(collection(issueRef, "rounds"));
   await deleteDoc(issueRef);
 }
 
