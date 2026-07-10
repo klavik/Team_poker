@@ -56,7 +56,8 @@ const state = {
   votes: [],
   myVote: null,
   rounds: [],
-  historicalVotes: []
+  historicalVotes: [],
+  directoryUsers: []
 };
 
 let firebaseApp = null;
@@ -72,6 +73,7 @@ let unsubscribeOwnVote = null;
 let unsubscribeVoteStatuses = null;
 let unsubscribeVotes = null;
 let unsubscribeRounds = null;
+let unsubscribeUsers = null;
 let activeVoteSubscriptionKey = null;
 
 const $ = id => document.getElementById(id);
@@ -279,7 +281,11 @@ function clearTeamListeners() {
 
 function clearAllListeners() {
   unsubscribe(unsubscribeTeams);
+  unsubscribe(unsubscribeUsers);
+
   unsubscribeTeams = null;
+  unsubscribeUsers = null;
+
   clearTeamListeners();
 }
 
@@ -313,7 +319,14 @@ async function init() {
     renderAuth();
 
     if (user) {
-      startTeamsListener();
+      clearAllListeners();
+
+      ensureCurrentUserProfile()
+        .then(() => {
+          startTeamsListener();
+          startUsersDirectoryListener();
+        })
+        .catch(error => handleError(error));
     } else {
       clearAllListeners();
       resetState();
@@ -335,6 +348,7 @@ function bindEvents() {
   $("deleteTeamBtn").addEventListener("click", deleteTeam);
   $("manageMembersBtn").addEventListener("click", openMembersDialog);
   $("addMemberBtn").addEventListener("click", addMember);
+  $("memberUserSelect").addEventListener("change", fillSelectedMemberName);
 
   $("openSessionDialogBtn").addEventListener("click", () => openDialog("sessionDialog"));
   $("createSessionBtn").addEventListener("click", createSession);
@@ -382,6 +396,107 @@ function bindEvents() {
   window.addEventListener("offline", () => {
     showConnectionProblem("Нет подключения к интернету. Изменения будут сохранены локально.");
   });
+}
+
+async function ensureCurrentUserProfile() {
+  const email = normalizeEmail(currentUser?.email);
+  if (!currentUser || !email) return;
+
+  await setDoc(
+    doc(db, "users", currentUser.uid),
+    {
+      uid: currentUser.uid,
+      email,
+      displayName: currentUser.displayName || email,
+      active: true,
+      lastLoginAt: serverTimestamp()
+    },
+    { merge: true }
+  );
+}
+
+function startUsersDirectoryListener() {
+  unsubscribe(unsubscribeUsers);
+
+  unsubscribeUsers = onSnapshot(
+    collection(db, "users"),
+    { includeMetadataChanges: true },
+    snapshot => {
+      state.directoryUsers = snapshot.docs
+        .map(userDoc => ({
+          id: userDoc.id,
+          ...userDoc.data()
+        }))
+        .filter(user => user.active !== false && user.email)
+        .sort((left, right) => {
+          const leftName = left.displayName || left.email;
+          const rightName = right.displayName || right.email;
+          return String(leftName).localeCompare(String(rightName), "ru");
+        });
+
+      renderAvailableUsers();
+    },
+    error => handleError(error)
+  );
+}
+
+function availableDirectoryUsers() {
+  const memberEmails = new Set(
+    state.members.map(member => normalizeEmail(member.email))
+  );
+
+  return state.directoryUsers.filter(user => (
+    !memberEmails.has(normalizeEmail(user.email))
+  ));
+}
+
+function renderAvailableUsers() {
+  const select = $("memberUserSelect");
+  if (!select) return;
+
+  const previousUid = select.value;
+  const users = availableDirectoryUsers();
+
+  select.innerHTML = users.length
+    ? users.map(user => {
+        const name = user.displayName || user.email;
+        return `
+          <option value="${escapeHtml(user.uid || user.id)}">
+            ${escapeHtml(name)} — ${escapeHtml(user.email)}
+          </option>
+        `;
+      }).join("")
+    : '<option value="">Нет доступных пользователей</option>';
+
+  if (users.some(user => (user.uid || user.id) === previousUid)) {
+    select.value = previousUid;
+  }
+
+  select.disabled = users.length === 0;
+  $("addMemberBtn").disabled = users.length === 0 || !isLead();
+
+  fillSelectedMemberName();
+}
+
+function fillSelectedMemberName() {
+  const selectedUid = $("memberUserSelect")?.value;
+  const user = state.directoryUsers.find(
+    item => (item.uid || item.id) === selectedUid
+  );
+
+  if (!user) {
+    $("memberName").value = "";
+    return;
+  }
+
+  const currentValue = $("memberName").value.trim();
+  const selectedName = user.displayName && user.displayName !== user.email
+    ? user.displayName
+    : "";
+
+  if (!currentValue || currentValue.includes("@")) {
+    $("memberName").value = selectedName;
+  }
 }
 
 function renderAuth() {
@@ -452,7 +567,8 @@ function resetState() {
     votes: [],
     myVote: null,
     rounds: [],
-    historicalVotes: []
+    historicalVotes: [],
+    directoryUsers: []
   });
 
   renderTeams();
@@ -466,7 +582,9 @@ function resetState() {
 }
 
 function startTeamsListener() {
-  clearAllListeners();
+  unsubscribe(unsubscribeTeams);
+  unsubscribeTeams = null;
+  clearTeamListeners();
 
   const email = normalizeEmail(currentUser?.email);
   const teamsQuery = query(
@@ -583,6 +701,7 @@ function startMembersListener() {
       state.role = state.members.find(member => member.email === email)?.role || null;
 
       renderMembers();
+      renderAvailableUsers();
       renderTeamControls();
       renderIssue();
     },
@@ -644,7 +763,12 @@ async function createTeam() {
 }
 
 function openMembersDialog() {
+  $("memberName").value = "";
+  $("memberRole").value = "member";
+  setFormMessage($("memberDialogMessage"));
+
   renderMembers();
+  renderAvailableUsers();
   show($("memberEditor"), isLead());
   openDialog("membersDialog");
 }
@@ -682,16 +806,26 @@ function renderMembers() {
 async function addMember() {
   if (!isLead()) return;
 
+  const selectedUid = $("memberUserSelect").value;
+  const selectedUser = state.directoryUsers.find(
+    user => (user.uid || user.id) === selectedUid
+  );
+
   const displayName = $("memberName").value.trim();
-  const email = normalizeEmail($("memberEmail").value);
   const role = $("memberRole").value;
   const target = $("memberDialogMessage");
 
   setFormMessage(target);
 
-  if (!displayName || !email) {
-    return setFormMessage(target, "Заполните имя и email.");
+  if (!selectedUser) {
+    return setFormMessage(
+      target,
+      "Выберите пользователя. Пользователь появится в списке после первого входа в приложение."
+    );
   }
+
+  const email = normalizeEmail(selectedUser.email);
+  const finalDisplayName = displayName || selectedUser.displayName || email;
 
   await withButton($("addMemberBtn"), "Добавление...", async () => {
     try {
@@ -700,8 +834,9 @@ async function addMember() {
       const batch = writeBatch(db);
 
       batch.set(memberRef, {
+        uid: selectedUser.uid || selectedUser.id,
         email,
-        displayName,
+        displayName: finalDisplayName,
         role,
         active: true,
         createdAt: serverTimestamp()
@@ -717,8 +852,9 @@ async function addMember() {
       await batch.commit();
 
       $("memberName").value = "";
-      $("memberEmail").value = "";
       $("memberRole").value = "member";
+
+      renderAvailableUsers();
       toast("Участник добавлен.", "success");
     } catch (error) {
       handleError(error, target);
