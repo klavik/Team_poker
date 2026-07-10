@@ -58,6 +58,9 @@
     .notice{border:1px solid #ffd3a4;background:var(--soft);border-radius:12px;padding:12px;color:#7a4300;font-size:13px}
     .error{border:1px solid #efb5b0;background:#fff0ef;border-radius:12px;padding:12px;color:var(--bad);font-size:13px}
     .success{border:1px solid #b8ddc0;background:#edf8ef;border-radius:12px;padding:12px;color:var(--ok);font-size:13px}
+    .connection-banner{max-width:1280px;margin:10px auto 0;padding:10px 14px;border-radius:10px;font-size:13px}
+    .connection-banner.warn{background:#fff3e4;border:1px solid #ffd3a4;color:#7a4300}
+    .connection-banner.ok{background:#edf8ef;border:1px solid #b8ddc0;color:var(--ok)}
     dialog{border:0;border-radius:18px;box-shadow:0 25px 70px rgba(15,23,42,.28);width:min(620px,calc(100% - 24px));padding:0}
     dialog::backdrop{background:rgba(15,23,42,.45)}
     .dialog-body{padding:20px}.dialog-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:15px}
@@ -80,6 +83,9 @@
       <span id="userEmail"></span>
       <button id="logoutBtn" class="secondary">Выйти</button>
     </div>
+  </div>
+  <div id="connectionBanner" class="connection-banner warn hidden">
+    Нет связи с Supabase. Приложение продолжит попытки автоматически.
   </div>
 </header>
 
@@ -111,6 +117,7 @@
         <div id="teamRole" class="muted" style="margin-top:8px"></div>
         <div class="actions">
           <button id="manageMembersBtn" class="secondary">Участники</button>
+          <button id="deleteTeamBtn" class="danger">Удалить команду</button>
         </div>
       </div>
 
@@ -122,6 +129,7 @@
         <select id="sessionSelect" style="margin-top:12px"></select>
         <div class="actions">
           <button id="finishSessionBtn" class="secondary">Завершить</button>
+          <button id="deleteSessionBtn" class="danger">Удалить сессию</button>
         </div>
       </div>
 
@@ -256,7 +264,9 @@ const configReady =
 
 let db = null;
 let authUser = null;
-let pollTimer = null;
+let refreshTimer = null;
+let refreshFailures = 0;
+let refreshInProgress = false;
 
 const state = {
   teams: [], teamId: null, members: [], role: null,
@@ -336,15 +346,62 @@ async function login(){
 
 async function logout(){
   await db.auth.signOut();
-  clearInterval(pollTimer);
+  clearTimeout(refreshTimer);
   authUser = null;
   renderAuth();
 }
 
+function showConnectionProblem(text="Нет связи с Supabase. Приложение продолжит попытки автоматически."){
+  const banner = $("connectionBanner");
+  banner.textContent = text;
+  banner.className = "connection-banner warn";
+}
+
+function hideConnectionProblem(){
+  const banner = $("connectionBanner");
+  banner.className = "connection-banner warn hidden";
+}
+
+function scheduleRefresh(delay=5000){
+  clearTimeout(refreshTimer);
+  if(!authUser) return;
+  refreshTimer = setTimeout(refreshLoop, delay);
+}
+
+async function refreshLoop(){
+  if(!authUser) return;
+
+  if(document.hidden || !navigator.onLine){
+    if(!navigator.onLine) showConnectionProblem("Нет подключения к интернету. Обновление возобновится автоматически.");
+    scheduleRefresh(15000);
+    return;
+  }
+
+  if(refreshInProgress){
+    scheduleRefresh(5000);
+    return;
+  }
+
+  refreshInProgress = true;
+  try{
+    await refreshCurrent();
+    refreshFailures = 0;
+    hideConnectionProblem();
+    scheduleRefresh(5000);
+  }catch(error){
+    console.warn("Фоновое обновление не выполнено:", error);
+    refreshFailures += 1;
+    showConnectionProblem("Не удалось обновить данные. Повторная попытка будет выполнена автоматически.");
+    const delay = Math.min(60000, 5000 * Math.pow(2, Math.min(refreshFailures, 4)));
+    scheduleRefresh(delay);
+  }finally{
+    refreshInProgress = false;
+  }
+}
+
 async function bootstrapApp(){
   await loadTeams();
-  clearInterval(pollTimer);
-  pollTimer = setInterval(refreshCurrent, 2500);
+  scheduleRefresh(5000);
 }
 
 async function loadTeams(){
@@ -390,12 +447,15 @@ function resetTeamState(){
   renderTeamControls();
 }
 
-async function loadMembers(){
+async function loadMembers(quiet=false){
   if(!state.teamId) return;
   const { data, error } = await db.from("team_members")
     .select("*").eq("team_id", state.teamId).eq("active", true).order("display_name");
 
-  if(error) return alert(errorText(error));
+  if(error){
+    if(quiet) throw error;
+    return alert(errorText(error));
+  }
   state.members = data || [];
 
   const myEmail = normalizeEmail(authUser?.email);
@@ -411,6 +471,8 @@ function renderTeamControls(){
   $("openSessionDialog").disabled = !isLead() || !state.teamId;
   $("openIssueDialog").disabled = !isLead() || !state.sessionId;
   $("finishSessionBtn").disabled = !isLead() || !state.sessionId;
+  $("deleteTeamBtn").disabled = !isLead() || !state.teamId;
+  $("deleteSessionBtn").disabled = !isLead() || !state.sessionId;
   $("manageMembersBtn").disabled = !state.teamId;
 }
 
@@ -463,6 +525,30 @@ async function createTeam(){
   $("newTeamName").value = "";
   await loadTeams();
   await selectTeam(team.id);
+}
+
+
+async function deleteTeam(){
+  if(!isLead() || !state.teamId) return;
+
+  const team = state.teams.find(t => t.id === state.teamId);
+  const name = team?.name || "эту команду";
+
+  const confirmed = confirm(
+    `Удалить команду «${name}»?\n\n` +
+    `Будут удалены все её участники, сессии, задачи и результаты голосований. ` +
+    `Отменить это действие будет невозможно.`
+  );
+  if(!confirmed) return;
+
+  const { error } = await db.from("teams").delete().eq("id", state.teamId);
+  if(error) return alert(errorText(error));
+
+  state.teamId = null;
+  state.sessionId = null;
+  state.issueId = null;
+  state.issue = null;
+  await loadTeams();
 }
 
 async function addMember(){
@@ -532,6 +618,29 @@ async function finishSession(){
   if(!isLead() || !state.sessionId) return;
   const { error } = await db.from("sessions").update({status:"finished"}).eq("id", state.sessionId);
   if(error) return alert(errorText(error));
+  await loadSessions();
+}
+
+
+async function deleteSession(){
+  if(!isLead() || !state.sessionId) return;
+
+  const session = state.sessions.find(s => s.id === state.sessionId);
+  const name = session?.name || "эту сессию";
+
+  const confirmed = confirm(
+    `Удалить сессию «${name}»?\n\n` +
+    `Будут удалены все задачи и результаты голосований этой сессии. ` +
+    `Отменить это действие будет невозможно.`
+  );
+  if(!confirmed) return;
+
+  const { error } = await db.from("sessions").delete().eq("id", state.sessionId);
+  if(error) return alert(errorText(error));
+
+  state.sessionId = null;
+  state.issueId = null;
+  state.issue = null;
   await loadSessions();
 }
 
@@ -719,6 +828,7 @@ function renderLeadActions(){
   if(i.status==="voting") buttons.push(`<button data-action="reveal">Раскрыть оценки</button>`);
   if(i.status==="revealed") buttons.push(`<button data-action="reround" class="secondary">Новый раунд</button>`);
   if(i.status==="estimated") buttons.push(`<button data-action="reround" class="secondary">Переоценить</button>`);
+  buttons.push(`<button data-action="delete" class="danger">Удалить задачу</button>`);
 
   root.innerHTML = buttons.join("");
   root.querySelectorAll("[data-action]").forEach(btn => {
@@ -728,6 +838,30 @@ function renderLeadActions(){
 
 async function issueAction(action){
   if(!isLead() || !state.issue) return;
+
+  if(action==="delete"){
+    const confirmed = confirm(
+      `Удалить задачу «${state.issue.title}»?
+
+` +
+      `Будут удалены все раунды и результаты голосований по этой задаче. ` +
+      `Отменить это действие будет невозможно.`
+    );
+    if(!confirmed) return;
+
+    const deletingId = state.issue.id;
+    const { error } = await db.from("issues").delete().eq("id", deletingId);
+    if(error) return alert(errorText(error));
+
+    state.issueId = null;
+    state.issue = null;
+    state.myVote = null;
+    state.votes = [];
+    state.progress = null;
+    await loadIssues();
+    return;
+  }
+
   let patch = {};
 
   if(action==="start") patch = {status:"voting"};
@@ -824,16 +958,33 @@ async function copyEstimate(){
 }
 
 async function refreshCurrent(){
-  if(!authUser || document.hidden) return;
-  if(state.teamId) await loadMembers();
-  if(state.sessionId) {
+  if(!authUser || document.hidden || !navigator.onLine) return;
+
+  if(state.teamId) await loadMembers(true);
+
+  if(state.sessionId){
     const currentIssueId = state.issueId;
-    const { data } = await db.from("issues").select("*")
-      .eq("session_id", state.sessionId).order("sort_order").order("created_at");
-    if(data){
-      state.issues=data;
-      renderIssues();
-      if(currentIssueId) await loadIssue(currentIssueId, true);
+    const { data, error } = await db.from("issues").select("*")
+      .eq("session_id", state.sessionId)
+      .order("sort_order")
+      .order("created_at");
+
+    if(error) throw error;
+
+    state.issues = data || [];
+    renderIssues();
+
+    if(currentIssueId){
+      const { data: issueData, error: issueError } = await db.from("issues")
+        .select("*")
+        .eq("id", currentIssueId)
+        .single();
+
+      if(issueError) throw issueError;
+
+      state.issue = issueData;
+      await Promise.all([loadProgress(), loadMyVote(), loadRevealedVotes()]);
+      renderIssue();
     }
   }
 }
@@ -851,6 +1002,8 @@ $("addMemberBtn").onclick = addMember;
 $("createSessionBtn").onclick = createSession;
 $("createIssueBtn").onclick = createIssue;
 $("finishSessionBtn").onclick = finishSession;
+$("deleteTeamBtn").onclick = deleteTeam;
+$("deleteSessionBtn").onclick = deleteSession;
 $("finalizeBtn").onclick = finalizeEstimate;
 $("copyEstimateBtn").onclick = copyEstimate;
 document.querySelectorAll("[data-close]").forEach(btn => {
@@ -863,9 +1016,22 @@ $("loginPassword").addEventListener("keydown", e => {
   if(e.key==="Enter") login();
 });
 
+window.addEventListener("online", () => {
+  hideConnectionProblem();
+  scheduleRefresh(500);
+});
+
+window.addEventListener("offline", () => {
+  showConnectionProblem("Нет подключения к интернету. Обновление возобновится автоматически.");
+});
+
+document.addEventListener("visibilitychange", () => {
+  if(!document.hidden) scheduleRefresh(300);
+});
+
 init().catch(error => {
   console.error(error);
-  alert(errorText(error));
+  showConnectionProblem("Не удалось подключиться к Supabase. Проверьте интернет и настройки config.js.");
 });
 </script>
 </body>
