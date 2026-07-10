@@ -75,6 +75,7 @@ let unsubscribeVotes = null;
 let unsubscribeRounds = null;
 let unsubscribeUsers = null;
 let activeVoteSubscriptionKey = null;
+let editingMemberEmail = null;
 
 const $ = id => document.getElementById(id);
 
@@ -710,6 +711,7 @@ function selectTeam(teamId) {
 }
 
 function resetTeamDependentState() {
+  editingMemberEmail = null;
   clearTeamListeners();
 
   state.teamId = null;
@@ -809,6 +811,7 @@ async function createTeam() {
 }
 
 function openMembersDialog() {
+  editingMemberEmail = null;
   $("memberName").value = "";
   $("memberRole").value = "member";
   setFormMessage($("memberDialogMessage"));
@@ -821,32 +824,186 @@ function openMembersDialog() {
 
 function renderMembers() {
   const root = $("membersList");
+  const currentEmail = normalizeEmail(currentUser?.email);
 
   if (!state.members.length) {
     root.innerHTML = '<div class="empty-state">Участников нет.</div>';
     return;
   }
 
-  root.innerHTML = state.members.map(member => `
-    <div class="member-row">
-      <div>
-        <strong>${escapeHtml(member.displayName)}</strong>
-        <div class="member-email">${escapeHtml(member.email)}</div>
+  root.innerHTML = state.members.map(member => {
+    const memberEmail = normalizeEmail(member.email);
+    const canEditName = isLead() || memberEmail === currentEmail;
+    const canRemove = isLead() && memberEmail !== currentEmail;
+    const editing = editingMemberEmail === memberEmail;
+
+    const nameBlock = editing
+      ? `
+          <div>
+            <input
+              class="member-name-input"
+              data-member-name-input="${escapeHtml(memberEmail)}"
+              value="${escapeHtml(member.displayName || "")}"
+              maxlength="100"
+              aria-label="Удобное имя участника"
+            >
+            <div class="member-email">${escapeHtml(member.email)}</div>
+          </div>
+        `
+      : `
+          <div>
+            <strong>${escapeHtml(member.displayName || member.email)}</strong>
+            <div class="member-email">${escapeHtml(member.email)}</div>
+          </div>
+        `;
+
+    const actions = editing
+      ? `
+          <div class="member-actions">
+            <button
+              class="button primary member-action-button"
+              type="button"
+              data-save-member-name="${escapeHtml(memberEmail)}"
+              title="Сохранить имя"
+            >✓</button>
+            <button
+              class="button secondary member-action-button"
+              type="button"
+              data-cancel-member-name="${escapeHtml(memberEmail)}"
+              title="Отменить"
+            >×</button>
+          </div>
+        `
+      : `
+          <div class="member-actions">
+            ${
+              canEditName
+                ? `
+                    <button
+                      class="button secondary member-action-button"
+                      type="button"
+                      data-edit-member-name="${escapeHtml(memberEmail)}"
+                      title="Изменить удобное имя"
+                    >✎</button>
+                  `
+                : ""
+            }
+            ${
+              canRemove
+                ? `
+                    <button
+                      class="button danger member-action-button"
+                      type="button"
+                      data-remove-member="${escapeHtml(memberEmail)}"
+                      title="Удалить участника"
+                    >×</button>
+                  `
+                : ""
+            }
+          </div>
+        `;
+
+    return `
+      <div class="member-row ${editing ? "editing" : ""}">
+        ${nameBlock}
+        <div class="role-pill ${member.role === "lead" ? "lead" : ""}">
+          ${member.role === "lead" ? "Тимлид" : "Участник"}
+        </div>
+        ${actions}
       </div>
-      <div class="role-pill ${member.role === "lead" ? "lead" : ""}">
-        ${member.role === "lead" ? "Тимлид" : "Участник"}
-      </div>
-      ${
-        isLead() && member.email !== normalizeEmail(currentUser.email)
-          ? `<button class="button danger icon-button" type="button" data-remove-member="${escapeHtml(member.email)}">×</button>`
-          : "<span></span>"
+    `;
+  }).join("");
+
+  root.querySelectorAll("[data-edit-member-name]").forEach(button => {
+    button.addEventListener("click", () => {
+      editingMemberEmail = button.dataset.editMemberName;
+      renderMembers();
+
+      const input = [...root.querySelectorAll("[data-member-name-input]")]
+        .find(item => item.dataset.memberNameInput === editingMemberEmail);
+
+      input?.focus();
+      input?.select();
+    });
+  });
+
+  root.querySelectorAll("[data-cancel-member-name]").forEach(button => {
+    button.addEventListener("click", () => {
+      editingMemberEmail = null;
+      renderMembers();
+    });
+  });
+
+  root.querySelectorAll("[data-save-member-name]").forEach(button => {
+    button.addEventListener("click", () => {
+      saveMemberDisplayName(button.dataset.saveMemberName);
+    });
+  });
+
+  root.querySelectorAll("[data-member-name-input]").forEach(input => {
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        saveMemberDisplayName(input.dataset.memberNameInput);
       }
-    </div>
-  `).join("");
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        editingMemberEmail = null;
+        renderMembers();
+      }
+    });
+  });
 
   root.querySelectorAll("[data-remove-member]").forEach(button => {
     button.addEventListener("click", () => removeMember(button.dataset.removeMember));
   });
+}
+
+async function saveMemberDisplayName(email) {
+  const memberEmail = normalizeEmail(email);
+  const member = state.members.find(
+    item => normalizeEmail(item.email) === memberEmail
+  );
+
+  const input = [...$("membersList").querySelectorAll("[data-member-name-input]")]
+    .find(item => item.dataset.memberNameInput === memberEmail);
+
+  const displayName = input?.value.trim() || "";
+  const currentEmail = normalizeEmail(currentUser?.email);
+  const canEditName = isLead() || memberEmail === currentEmail;
+
+  if (!member || !canEditName) {
+    toast("Недостаточно прав для изменения имени.");
+    return;
+  }
+
+  if (!displayName) {
+    toast("Удобное имя не может быть пустым.");
+    input?.focus();
+    return;
+  }
+
+  if (displayName.length > 100) {
+    toast("Удобное имя должно быть не длиннее 100 символов.");
+    input?.focus();
+    return;
+  }
+
+  try {
+    await updateDoc(
+      doc(db, "teams", state.teamId, "members", memberEmail),
+      {
+        displayName,
+        updatedAt: serverTimestamp()
+      }
+    );
+
+    editingMemberEmail = null;
+    toast("Удобное имя сохранено.", "success", 2500);
+  } catch (error) {
+    handleError(error);
+  }
 }
 
 async function addMember() {
