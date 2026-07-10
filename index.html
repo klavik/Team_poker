@@ -90,11 +90,13 @@
   </section>
 
   <section id="loginView" class="card hidden" style="max-width:520px;margin:40px auto">
-    <h2>Вход по рабочей почте</h2>
-    <p class="muted">На указанную почту придёт одноразовая ссылка. После входа будут доступны команды, в которые добавлен этот адрес.</p>
+    <h2>Вход</h2>
+    <p class="muted">Введите рабочий email и пароль, выданный администратором. Письма для входа не отправляются.</p>
     <label for="loginEmail">Email</label>
-    <input id="loginEmail" type="email" placeholder="name@company.ru">
-    <div class="actions"><button id="loginBtn">Отправить ссылку</button></div>
+    <input id="loginEmail" type="email" autocomplete="username" placeholder="name@company.ru">
+    <label for="loginPassword" style="margin-top:10px">Пароль</label>
+    <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Введите пароль">
+    <div class="actions"><button id="loginBtn">Войти</button></div>
     <div id="loginMessage" style="margin-top:12px"></div>
   </section>
 
@@ -305,18 +307,31 @@ function renderAuth(){
 
 async function login(){
   const email = normalizeEmail($("loginEmail").value);
+  const password = $("loginPassword").value;
+
   if(!email) return message($("loginMessage"), "Укажите email.", "error");
+  if(!password) return message($("loginMessage"), "Укажите пароль.", "error");
 
   $("loginBtn").disabled = true;
-  const redirectTo = window.location.origin + window.location.pathname;
-  const { error } = await db.auth.signInWithPassword({
-  email,
-  password
-});
-  $("loginBtn").disabled = false;
+  $("loginBtn").textContent = "Вход...";
 
-  if(error) return message($("loginMessage"), errorText(error), "error");
-  message($("loginMessage"), "Ссылка для входа отправлена на почту.");
+  const { error } = await db.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  $("loginBtn").disabled = false;
+  $("loginBtn").textContent = "Войти";
+
+  if(error){
+    const text = error.message === "Invalid login credentials"
+      ? "Неверный email или пароль."
+      : errorText(error);
+    return message($("loginMessage"), text, "error");
+  }
+
+  $("loginPassword").value = "";
+  message($("loginMessage"), "");
 }
 
 async function logout(){
@@ -841,7 +856,12 @@ $("copyEstimateBtn").onclick = copyEstimate;
 document.querySelectorAll("[data-close]").forEach(btn => {
   btn.onclick = () => $(btn.dataset.close).close();
 });
-$("loginEmail").addEventListener("keydown", e => { if(e.key==="Enter") login(); });
+$("loginEmail").addEventListener("keydown", e => {
+  if(e.key==="Enter") $("loginPassword").focus();
+});
+$("loginPassword").addEventListener("keydown", e => {
+  if(e.key==="Enter") login();
+});
 
 init().catch(error => {
   console.error(error);
