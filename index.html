@@ -81,6 +81,7 @@
     </div>
     <div id="userBox" class="top-user hidden">
       <span id="userEmail"></span>
+      <button id="changePasswordBtn" class="secondary">Сменить пароль</button>
       <button id="logoutBtn" class="secondary">Выйти</button>
     </div>
   </div>
@@ -202,6 +203,52 @@
     </section>
   </section>
 </main>
+
+
+<dialog id="passwordDialog">
+  <div class="dialog-body">
+    <div class="dialog-head">
+      <h2>Смена пароля</h2>
+      <button class="close" data-close="passwordDialog">×</button>
+    </div>
+
+    <p class="muted">
+      Для подтверждения личности сначала укажите текущий пароль.
+      Письма при смене пароля не отправляются.
+    </p>
+
+    <label for="currentPassword">Текущий пароль</label>
+    <input
+      id="currentPassword"
+      type="password"
+      autocomplete="current-password"
+      placeholder="Введите текущий пароль"
+    >
+
+    <label for="newPassword" style="margin-top:10px">Новый пароль</label>
+    <input
+      id="newPassword"
+      type="password"
+      autocomplete="new-password"
+      placeholder="Не менее 8 символов"
+    >
+
+    <label for="confirmNewPassword" style="margin-top:10px">Повторите новый пароль</label>
+    <input
+      id="confirmNewPassword"
+      type="password"
+      autocomplete="new-password"
+      placeholder="Введите новый пароль ещё раз"
+    >
+
+    <div class="actions">
+      <button id="savePasswordBtn">Сохранить новый пароль</button>
+      <button id="cancelPasswordBtn" class="secondary">Отмена</button>
+    </div>
+
+    <div id="passwordMessage" style="margin-top:12px"></div>
+  </div>
+</dialog>
 
 <dialog id="teamDialog">
   <div class="dialog-body">
@@ -349,6 +396,93 @@ async function logout(){
   clearTimeout(refreshTimer);
   authUser = null;
   renderAuth();
+}
+
+
+function clearPasswordForm(){
+  $("currentPassword").value = "";
+  $("newPassword").value = "";
+  $("confirmNewPassword").value = "";
+  $("passwordMessage").innerHTML = "";
+  $("savePasswordBtn").disabled = false;
+  $("savePasswordBtn").textContent = "Сохранить новый пароль";
+}
+
+function openPasswordDialog(){
+  clearPasswordForm();
+  $("passwordDialog").showModal();
+  setTimeout(() => $("currentPassword").focus(), 0);
+}
+
+function closePasswordDialog(){
+  clearPasswordForm();
+  $("passwordDialog").close();
+}
+
+async function changePassword(){
+  if(!authUser?.email) return;
+
+  const currentPassword = $("currentPassword").value;
+  const newPassword = $("newPassword").value;
+  const confirmNewPassword = $("confirmNewPassword").value;
+
+  if(!currentPassword){
+    return message($("passwordMessage"), "Введите текущий пароль.", "error");
+  }
+
+  if(!newPassword){
+    return message($("passwordMessage"), "Введите новый пароль.", "error");
+  }
+
+  if(newPassword.length < 8){
+    return message($("passwordMessage"), "Новый пароль должен содержать не менее 8 символов.", "error");
+  }
+
+  if(newPassword !== confirmNewPassword){
+    return message($("passwordMessage"), "Новые пароли не совпадают.", "error");
+  }
+
+  if(currentPassword === newPassword){
+    return message($("passwordMessage"), "Новый пароль должен отличаться от текущего.", "error");
+  }
+
+  $("savePasswordBtn").disabled = true;
+  $("savePasswordBtn").textContent = "Проверка...";
+
+  // Повторная авторизация проверяет текущий пароль.
+  const { error: verifyError } = await db.auth.signInWithPassword({
+    email: authUser.email,
+    password: currentPassword
+  });
+
+  if(verifyError){
+    $("savePasswordBtn").disabled = false;
+    $("savePasswordBtn").textContent = "Сохранить новый пароль";
+
+    const text = verifyError.message === "Invalid login credentials"
+      ? "Текущий пароль указан неверно."
+      : errorText(verifyError);
+
+    return message($("passwordMessage"), text, "error");
+  }
+
+  $("savePasswordBtn").textContent = "Сохранение...";
+
+  const { error: updateError } = await db.auth.updateUser({
+    password: newPassword
+  });
+
+  if(updateError){
+    $("savePasswordBtn").disabled = false;
+    $("savePasswordBtn").textContent = "Сохранить новый пароль";
+    return message($("passwordMessage"), errorText(updateError), "error");
+  }
+
+  message($("passwordMessage"), "Пароль успешно изменён.");
+
+  setTimeout(() => {
+    closePasswordDialog();
+  }, 900);
 }
 
 function showConnectionProblem(text="Нет связи с Supabase. Приложение продолжит попытки автоматически."){
@@ -990,7 +1124,10 @@ async function refreshCurrent(){
 }
 
 $("loginBtn").onclick = login;
+$("changePasswordBtn").onclick = openPasswordDialog;
 $("logoutBtn").onclick = logout;
+$("savePasswordBtn").onclick = changePassword;
+$("cancelPasswordBtn").onclick = closePasswordDialog;
 $("teamSelect").onchange = e => selectTeam(e.target.value);
 $("sessionSelect").onchange = e => selectSession(e.target.value);
 $("openTeamDialog").onclick = () => $("teamDialog").showModal();
@@ -1014,6 +1151,16 @@ $("loginEmail").addEventListener("keydown", e => {
 });
 $("loginPassword").addEventListener("keydown", e => {
   if(e.key==="Enter") login();
+});
+
+$("currentPassword").addEventListener("keydown", e => {
+  if(e.key==="Enter") $("newPassword").focus();
+});
+$("newPassword").addEventListener("keydown", e => {
+  if(e.key==="Enter") $("confirmNewPassword").focus();
+});
+$("confirmNewPassword").addEventListener("keydown", e => {
+  if(e.key==="Enter") changePassword();
 });
 
 window.addEventListener("online", () => {
