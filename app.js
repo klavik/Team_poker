@@ -2102,9 +2102,31 @@ async function deleteIssueRecursive(teamId, sessionId, issueId) {
     "issues", issueId
   );
 
-  await deleteCollectionRefs(collection(issueRef, "votes"));
-  await deleteCollectionRefs(collection(issueRef, "vote_status"));
+  /*
+    До раскрытия раунда тимлид не может читать чужие значения голосов.
+    Поэтому нельзя делать getDocs(collection(issueRef, "votes")).
+
+    Для каждого голоса приложение создаёт документ vote_status
+    с таким же идентификатором. Эти статусы доступны всей команде,
+    поэтому по ним можно сформировать ссылки на документы голосов
+    и удалить их, не читая скрытые оценки.
+  */
+  const statusSnapshot = await getDocs(
+    collection(issueRef, "vote_status")
+  );
+
+  const voteRefs = statusSnapshot.docs.map(statusDoc =>
+    doc(issueRef, "votes", statusDoc.id)
+  );
+
+  const statusRefs = statusSnapshot.docs.map(statusDoc => statusDoc.ref);
+
+  await deleteRefsInChunks(voteRefs);
+  await deleteRefsInChunks(statusRefs);
+
+  // История раскрытых раундов доступна тимлиду для чтения и удаления.
   await deleteCollectionRefs(collection(issueRef, "rounds"));
+
   await deleteDoc(issueRef);
 }
 
