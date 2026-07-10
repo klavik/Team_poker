@@ -309,10 +309,10 @@ async function login(){
 
   $("loginBtn").disabled = true;
   const redirectTo = window.location.origin + window.location.pathname;
-  const { error } = await db.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: redirectTo }
-  });
+  const { error } = await db.auth.signInWithPassword({
+  email,
+  password
+});
   $("loginBtn").disabled = false;
 
   if(error) return message($("loginMessage"), errorText(error), "error");
