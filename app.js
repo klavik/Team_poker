@@ -1736,19 +1736,32 @@ function startVoteListeners() {
   ];
 
   const round = Number(state.issue.currentRound);
-  const ownVoteRef = doc(
-    db,
-    ...issueBase,
-    "votes",
-    voteDocId(round, currentUser.uid)
+
+  /*
+    Нельзя подписываться на конкретный документ votes/{round_uid}.
+    Если пользователь ещё не голосовал, документа нет, а правило чтения
+    использует resource.data. Для отсутствующего документа Firestore
+    возвращает permission-denied.
+
+    Запрос по userId безопасен: правила могут доказать, что приложение
+    читает только голоса текущего пользователя. Пустой результат допустим.
+  */
+  const ownVotesQuery = query(
+    collection(db, ...issueBase, "votes"),
+    where("userId", "==", currentUser.uid)
   );
 
   unsubscribeOwnVote = onSnapshot(
-    ownVoteRef,
+    ownVotesQuery,
     snapshot => {
-      state.myVote = snapshot.exists()
-        ? { id: snapshot.id, ...snapshot.data() }
+      const voteDoc = snapshot.docs.find(
+        item => Number(item.data().round) === round
+      );
+
+      state.myVote = voteDoc
+        ? { id: voteDoc.id, ...voteDoc.data() }
         : null;
+
       renderIssue();
     },
     error => handleError(error)
@@ -1843,23 +1856,37 @@ function calculateVoteStats(votes) {
 async function loadLegacyHistoricalVotes() {
   state.historicalVotes = [];
 
-  if (!state.issue) {
+  const issue = state.issue;
+  if (!issue) {
     renderRoundHistory();
     return;
   }
 
-  const currentRound = Number(state.issue.currentRound);
+  // Фиксируем идентификаторы, чтобы переключение задачи во время запросов
+  // не направило следующий запрос в другую коллекцию.
+  const requestedTeamId = state.teamId;
+  const requestedSessionId = state.sessionId;
+  const requestedIssueId = issue.id;
+  const currentRound = Number(issue.currentRound);
+
   if (currentRound <= 1) {
     renderRoundHistory();
     return;
   }
 
   const historical = [];
+  const requestedVotesRef = collection(
+    db,
+    "teams", requestedTeamId,
+    "sessions", requestedSessionId,
+    "issues", requestedIssueId,
+    "votes"
+  );
 
   for (let round = 1; round < currentRound; round += 1) {
     const snapshot = await getDocs(
       query(
-        votesCollectionRef(),
+        requestedVotesRef,
         where("round", "==", round)
       )
     );
@@ -1867,10 +1894,25 @@ async function loadLegacyHistoricalVotes() {
     snapshot.docs.forEach(voteDoc => {
       historical.push({ id: voteDoc.id, ...voteDoc.data() });
     });
+
+    // Пользователь уже переключился на другую задачу — результат не применяем.
+    if (
+      state.teamId !== requestedTeamId ||
+      state.sessionId !== requestedSessionId ||
+      state.issue?.id !== requestedIssueId
+    ) {
+      return;
+    }
   }
 
-  state.historicalVotes = historical;
-  renderRoundHistory();
+  if (
+    state.teamId === requestedTeamId &&
+    state.sessionId === requestedSessionId &&
+    state.issue?.id === requestedIssueId
+  ) {
+    state.historicalVotes = historical;
+    renderRoundHistory();
+  }
 }
 
 async function buildRoundSnapshot(round, status, finalEstimate = null) {
