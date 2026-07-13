@@ -262,7 +262,7 @@ textarea { min-height: 95px; resize: vertical; }
   border-bottom: 1px solid var(--border);
 }
 .vote-row { grid-template-columns: minmax(0, 1fr) auto; }
-.member-row { grid-template-columns: minmax(0, 1fr) 110px 42px; }
+.member-row { grid-template-columns: minmax(0, 1fr) 110px auto; }
 .vote-row:last-child, .member-row:last-child { border-bottom: 0; }
 .member-email { margin-top: 2px; color: var(--muted); font-size: 12px; }
 .role-pill {
@@ -320,7 +320,16 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .user-email { width: 100%; }
   .metrics, .two-columns { grid-template-columns: 1fr; }
   .poker-grid { grid-template-columns: repeat(3, 1fr); }
-  .member-row { grid-template-columns: minmax(0, 1fr) 95px 38px; }
+  .member-row { grid-template-columns: minmax(0, 1fr) 88px auto; }
+
+  .member-actions {
+    gap: 4px;
+  }
+
+  .member-action-button {
+    width: 34px;
+    height: 34px;
+  }
 }
 
 
@@ -450,4 +459,54 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .round-history-body {
     padding-left: 14px;
   }
+}
+
+
+.member-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.member-action-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 9px;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.member-name-input {
+  min-width: 0;
+  padding: 8px 10px;
+  font-weight: 700;
+}
+
+.member-row.editing {
+  align-items: start;
+}
+
+
+.issue-links {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--info);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-button:hover {
+  color: var(--accent-hover);
 }

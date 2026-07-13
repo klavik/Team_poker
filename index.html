@@ -111,9 +111,14 @@
             <div>
               <div id="issueStatus"></div>
               <h2 id="issueTitle" class="issue-title"></h2>
-              <a id="gitlabLink" class="hidden" target="_blank" rel="noopener noreferrer">
-                Открыть в GitLab
-              </a>
+              <div class="issue-links">
+                <a id="gitlabLink" class="hidden" target="_blank" rel="noopener noreferrer">
+                  Открыть в GitLab
+                </a>
+                <button id="copyIssueLinkBtn" class="link-button" type="button">
+                  Скопировать ссылку на задачу
+                </button>
+              </div>
             </div>
 
             <div id="leadIssueActions" class="actions top-actions"></div>
