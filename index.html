@@ -71,6 +71,7 @@
         <div id="teamRole" class="muted small"></div>
 
         <div class="actions">
+          <button id="editTeamBtn" class="button secondary" type="button">Редактировать</button>
           <button id="manageMembersBtn" class="button secondary" type="button">Участники</button>
           <button id="deleteTeamBtn" class="button danger" type="button">Удалить</button>
         </div>
@@ -85,6 +86,7 @@
         <select id="sessionSelect" aria-label="Сессия"></select>
 
         <div class="actions">
+          <button id="editSessionBtn" class="button secondary" type="button">Редактировать</button>
           <button id="finishSessionBtn" class="button secondary" type="button">Завершить</button>
           <button id="deleteSessionBtn" class="button danger" type="button">Удалить</button>
         </div>
@@ -113,7 +115,7 @@
               <h2 id="issueTitle" class="issue-title"></h2>
               <div class="issue-links">
                 <a id="gitlabLink" class="hidden" target="_blank" rel="noopener noreferrer">
-                  Открыть в GitLab
+                  Открыть внешнюю задачу
                 </a>
                 <button id="copyIssueLinkBtn" class="link-button" type="button">
                   Скопировать ссылку на задачу
@@ -250,6 +252,25 @@
   </form>
 </dialog>
 
+<dialog id="editTeamDialog">
+  <form method="dialog" class="dialog-card" onsubmit="return false">
+    <div class="dialog-title-row">
+      <h2>Редактирование команды</h2>
+      <button class="button secondary icon-button" type="button" data-close-dialog="editTeamDialog">×</button>
+    </div>
+
+    <label for="editTeamName">Название</label>
+    <input id="editTeamName" maxlength="100">
+
+    <div class="actions">
+      <button id="saveTeamChangesBtn" class="button primary" type="button">Сохранить</button>
+      <button class="button secondary" type="button" data-close-dialog="editTeamDialog">Отмена</button>
+    </div>
+
+    <div id="editTeamMessage" class="form-message"></div>
+  </form>
+</dialog>
+
 <dialog id="membersDialog">
   <form method="dialog" class="dialog-card wide-dialog" onsubmit="return false">
     <div class="dialog-title-row">
@@ -311,6 +332,28 @@
   </form>
 </dialog>
 
+<dialog id="editSessionDialog">
+  <form method="dialog" class="dialog-card" onsubmit="return false">
+    <div class="dialog-title-row">
+      <h2>Редактирование сессии</h2>
+      <button class="button secondary icon-button" type="button" data-close-dialog="editSessionDialog">×</button>
+    </div>
+
+    <label for="editSessionName">Название</label>
+    <input id="editSessionName" maxlength="150">
+
+    <label for="editSessionIteration">Iteration / спринт</label>
+    <input id="editSessionIteration" placeholder="Sprint 2026-Q3-01">
+
+    <div class="actions">
+      <button id="saveSessionChangesBtn" class="button primary" type="button">Сохранить</button>
+      <button class="button secondary" type="button" data-close-dialog="editSessionDialog">Отмена</button>
+    </div>
+
+    <div id="editSessionMessage" class="form-message"></div>
+  </form>
+</dialog>
+
 <dialog id="issueDialog">
   <form method="dialog" class="dialog-card" onsubmit="return false">
     <div class="dialog-title-row">
@@ -321,8 +364,8 @@
     <label for="newIssueTitle">Название</label>
     <input id="newIssueTitle" placeholder="Backend. API групп прокси">
 
-    <label for="newIssueUrl">Ссылка GitLab</label>
-    <input id="newIssueUrl" type="url" placeholder="https://gitlab...">
+    <label for="newIssueUrl">Ссылка на задачу во внешней системе</label>
+    <input id="newIssueUrl" type="url" placeholder="https://gitlab... или https://jira...">
 
     <label for="newIssueDescription">Границы задачи</label>
     <textarea id="newIssueDescription" placeholder="Что входит в задачу и какой результат должен быть готов"></textarea>
@@ -333,6 +376,31 @@
     </div>
 
     <div id="issueDialogMessage" class="form-message"></div>
+  </form>
+</dialog>
+
+<dialog id="editIssueDialog">
+  <form method="dialog" class="dialog-card" onsubmit="return false">
+    <div class="dialog-title-row">
+      <h2>Редактирование задачи</h2>
+      <button class="button secondary icon-button" type="button" data-close-dialog="editIssueDialog">×</button>
+    </div>
+
+    <label for="editIssueTitle">Название</label>
+    <input id="editIssueTitle" maxlength="300">
+
+    <label for="editIssueUrl">Ссылка на задачу во внешней системе</label>
+    <input id="editIssueUrl" type="url" placeholder="https://gitlab... или https://jira...">
+
+    <label for="editIssueDescription">Границы задачи</label>
+    <textarea id="editIssueDescription"></textarea>
+
+    <div class="actions">
+      <button id="saveIssueChangesBtn" class="button primary" type="button">Сохранить</button>
+      <button class="button secondary" type="button" data-close-dialog="editIssueDialog">Отмена</button>
+    </div>
+
+    <div id="editIssueMessage" class="form-message"></div>
   </form>
 </dialog>
 </body>
