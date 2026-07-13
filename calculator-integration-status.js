@@ -8,24 +8,21 @@ import {
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 
-import {
-  getFirestore,
-  doc,
-  getDoc,
-  onSnapshot,
-  setDoc
-} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
-
-const runtimeConfig = window.PLANNING_POKER_CONFIG || {};
 const integrationConfig =
   window.TEAM_CALCULATOR_INTEGRATION || {};
 
-let unsubscribeIssue = null;
-let syncInFlightKey = null;
-let currentAuthUser = null;
+const POLL_INTERVAL_MS = 1200;
+const RETRY_DELAY_MS = 30000;
+
+let currentUser = null;
+let pollTimer = null;
+let inFlightKey = null;
+let retryAfterByKey = new Map();
 
 function integrationStyle() {
-  if (document.getElementById("teamCalculatorIntegrationStyle")) return;
+  if (document.getElementById("teamCalculatorIntegrationStyle")) {
+    return;
+  }
 
   const style = document.createElement("style");
   style.id = "teamCalculatorIntegrationStyle";
@@ -54,23 +51,36 @@ function integrationStyle() {
       background:#fff3f2;
     }
   `;
+
   document.head.appendChild(style);
 }
 
 function ensureStatusBox() {
   integrationStyle();
 
-  const oldButton = [...document.querySelectorAll("button")].find(button =>
-    /^copyTeam/i.test(button.id || "")
-    || /^Данные\s+Team_/i.test(
-      (button.textContent || "").trim()
-    )
-  );
+  const oldButton =
+    document.getElementById("copyTeamCalendarBtn")
+    || [...document.querySelectorAll("button")].find(button =>
+      /^Данные\s+Team_/i.test(
+        (button.textContent || "").trim()
+      )
+    );
 
-  if (oldButton) oldButton.style.display = "none";
+  if (oldButton) {
+    oldButton.style.display = "none";
+  }
 
   let box = document.getElementById("teamCalculatorSyncBox");
-  if (box) return box;
+
+  if (box) {
+    return box;
+  }
+
+  const anchor = document.getElementById("finalMessage");
+
+  if (!anchor) {
+    return null;
+  }
 
   box = document.createElement("div");
   box.id = "teamCalculatorSyncBox";
@@ -78,17 +88,17 @@ function ensureStatusBox() {
   box.textContent =
     "После фиксации оценка будет автоматически передана в Team_calculator.";
 
-  const anchor = document.getElementById("finalMessage");
-  if (anchor) {
-    anchor.insertAdjacentElement("afterend", box);
-  }
+  anchor.insertAdjacentElement("afterend", box);
 
   return box;
 }
 
 function setStatus(text, type = "") {
   const box = ensureStatusBox();
-  if (!box) return;
+
+  if (!box) {
+    return;
+  }
 
   box.textContent = text;
   box.className =
@@ -96,118 +106,159 @@ function setStatus(text, type = "") {
     + (type ? ` ${type}` : "");
 }
 
-function currentIssueLink() {
-  const params = new URLSearchParams(
-    window.location.hash.replace(/^#/, "")
-  );
+function configuredEndpoint() {
+  const endpoint = String(
+    integrationConfig.endpoint || ""
+  ).trim();
 
-  const teamId = params.get("team");
-  const sessionId = params.get("session");
-  const issueId = params.get("issue");
+  if (!endpoint || endpoint.includes("REPLACE_")) {
+    return null;
+  }
 
-  if (!teamId || !sessionId || !issueId) return null;
+  return endpoint;
+}
 
-  return {
-    teamId,
-    sessionId,
-    issueId
+function currentPayload() {
+  const api = window.TeamPokerIntegration;
+
+  if (
+    !api
+    || typeof api.getCurrentEstimatePayload !== "function"
+  ) {
+    return null;
+  }
+
+  const payload = api.getCurrentEstimatePayload();
+
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const normalized = {
+    ...payload,
+    taskId: String(payload.taskId || "").trim(),
+    title: String(payload.title || "").trim(),
+    estimatedRole: String(
+      payload.estimatedRole || ""
+    ).trim(),
+    finalEstimate: Number(payload.finalEstimate),
+    estimateVersion: Math.max(
+      1,
+      Number(payload.estimateVersion) || 1
+    )
   };
-}
 
-function isFinalEstimate(issue) {
-  return issue
-    && issue.status === "estimated"
-    && ["backend", "frontend"].includes(issue.estimatedRole)
-    && Number.isFinite(Number(issue.finalEstimate))
-    && Number(issue.finalEstimate) > 0;
-}
-
-function timestampToIso(value) {
-  if (!value) return null;
-
-  if (typeof value.toDate === "function") {
-    return value.toDate().toISOString();
-  }
-
-  if (typeof value.toMillis === "function") {
-    return new Date(value.toMillis()).toISOString();
-  }
-
-  if (value.seconds) {
-    return new Date(value.seconds * 1000).toISOString();
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? null
-    : date.toISOString();
-}
-
-function syncVersion(issue) {
-  return Math.max(1, Number(issue.estimateVersion) || 1);
-}
-
-function shouldSync(issue) {
-  if (!isFinalEstimate(issue)) return false;
-
-  const version = syncVersion(issue);
-  const sync = issue.calculatorSync || {};
-
-  if (sync.status === "sending" && sync.estimateVersion === version) {
-    return false;
+  if (!normalized.taskId || !normalized.title) {
+    return null;
   }
 
   if (
-    ["synced", "ignored_stale"].includes(sync.status)
-    && Number(sync.estimateVersion) >= version
+    !["backend", "frontend"].includes(
+      normalized.estimatedRole
+    )
   ) {
-    return false;
+    return null;
   }
 
-  return true;
+  if (
+    !Number.isFinite(normalized.finalEstimate)
+    || normalized.finalEstimate <= 0
+  ) {
+    return null;
+  }
+
+  return normalized;
 }
 
-function renderSync(issue) {
-  if (!integrationConfig.endpoint
-      || integrationConfig.endpoint.includes("REPLACE_")) {
+function payloadKey(payload) {
+  return [
+    payload.taskId,
+    payload.estimatedRole,
+    payload.estimateVersion
+  ].join(":");
+}
+
+function storageKey(payload) {
+  return `teamCalculatorSync:${payloadKey(payload)}`;
+}
+
+function readStoredSync(payload) {
+  try {
+    const raw = localStorage.getItem(storageKey(payload));
+
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSync(payload, value) {
+  try {
+    localStorage.setItem(
+      storageKey(payload),
+      JSON.stringify(value)
+    );
+  } catch {
+    // Интеграция продолжит работать и без localStorage.
+  }
+}
+
+function renderCurrentState() {
+  const endpoint = configuredEndpoint();
+
+  if (!endpoint) {
     setStatus(
-      "Интеграция с Team_calculator не настроена: укажите URL Cloudflare Worker.",
+      "Интеграция не настроена: укажите URL Cloudflare Worker.",
       "error"
     );
     return;
   }
 
-  if (!isFinalEstimate(issue)) {
+  if (!currentUser) {
+    setStatus(
+      "Войдите, чтобы передавать оценки в Team_calculator."
+    );
+    return;
+  }
+
+  const payload = currentPayload();
+
+  if (!payload) {
     setStatus(
       "После фиксации оценка будет автоматически передана в Team_calculator."
     );
     return;
   }
 
-  const sync = issue.calculatorSync || {};
+  const key = payloadKey(payload);
 
-  if (sync.status === "synced") {
+  if (inFlightKey === key) {
+    setStatus(
+      "Оценка передаётся в общий пул Team_calculator…",
+      "warn"
+    );
+    return;
+  }
+
+  const stored = readStoredSync(payload);
+
+  if (
+    stored
+    && ["synced", "ignored_stale"].includes(stored.status)
+  ) {
     setStatus(
       `Передано в общий пул Team_calculator · версия ${
-        sync.estimateVersion || "—"
+        payload.estimateVersion
       }.`,
       "ok"
     );
     return;
   }
 
-  if (sync.status === "ignored_stale") {
-    setStatus(
-      "Передача пропущена: в Team_calculator уже есть более новая версия.",
-      "warn"
-    );
-    return;
-  }
-
-  if (sync.status === "error") {
+  if (stored?.status === "error") {
     setStatus(
       `Ошибка передачи в Team_calculator: ${
-        sync.lastError || "повтор будет выполнен при следующем открытии задачи"
+        stored.error || "повторная попытка будет выполнена автоматически"
       }.`,
       "error"
     );
@@ -215,214 +266,151 @@ function renderSync(issue) {
   }
 
   setStatus(
-    "Оценка передаётся в общий пул Team_calculator…",
+    "Оценка готова к автоматической передаче.",
     "warn"
   );
 }
 
-async function readNames(db, link, issue) {
-  const [teamSnapshot, sessionSnapshot] = await Promise.all([
-    getDoc(doc(db, "teams", link.teamId)),
-    getDoc(
-      doc(
-        db,
-        "teams",
-        link.teamId,
-        "sessions",
-        link.sessionId
-      )
-    )
-  ]);
+async function sendPayload(payload) {
+  const endpoint = configuredEndpoint();
 
-  return {
-    teamName:
-      issue.estimatedTeamName
-      || teamSnapshot.data()?.name
-      || "",
-    sessionName:
-      sessionSnapshot.data()?.name
-      || ""
-  };
-}
+  if (!endpoint || !currentUser) {
+    return;
+  }
 
-async function writeSyncState(issueRef, state) {
-  await setDoc(
-    issueRef,
-    {
-      calculatorSync: {
-        ...state,
-        updatedAt: new Date().toISOString()
-      }
-    },
-    { merge: true }
-  );
-}
+  const key = payloadKey(payload);
 
-async function sendIssue(db, link, issue) {
-  if (!currentAuthUser) return;
-  if (!shouldSync(issue)) return;
+  if (inFlightKey === key) {
+    return;
+  }
 
-  const version = syncVersion(issue);
-  const inFlightKey =
-    `${link.teamId}/${link.sessionId}/${link.issueId}/v${version}`;
+  const stored = readStoredSync(payload);
 
-  if (syncInFlightKey === inFlightKey) return;
-  syncInFlightKey = inFlightKey;
+  if (
+    stored
+    && ["synced", "ignored_stale"].includes(stored.status)
+  ) {
+    return;
+  }
 
-  const issueRef = doc(
-    db,
-    "teams",
-    link.teamId,
-    "sessions",
-    link.sessionId,
-    "issues",
-    link.issueId
+  const retryAfter = retryAfterByKey.get(key) || 0;
+
+  if (Date.now() < retryAfter) {
+    return;
+  }
+
+  inFlightKey = key;
+  setStatus(
+    "Оценка передаётся в общий пул Team_calculator…",
+    "warn"
   );
 
   try {
-    await writeSyncState(issueRef, {
-      status: "sending",
-      estimateVersion: version,
-      lastError: null
-    });
+    const token = await currentUser.getIdToken();
 
-    const names = await readNames(db, link, issue);
-    const token = await currentAuthUser.getIdToken();
-
-    const payload = {
-      taskId: link.issueId,
-      title: String(issue.title || "").trim(),
-      externalTaskUrl:
-        issue.gitlabUrl
-        || issue.externalTaskUrl
-        || issue.url
-        || null,
-      estimatedRole: issue.estimatedRole,
-      finalEstimate: Number(issue.finalEstimate),
-      estimateVersion: version,
-      finalizedAt: timestampToIso(issue.finalizedAt),
-      finalizedBy: {
-        uid:
-          issue.finalizedByUid
-          || currentAuthUser.uid,
-        email:
-          issue.finalizedByEmail
-          || currentAuthUser.email
-          || null,
-        displayName:
-          issue.finalizedByDisplayName
-          || currentAuthUser.displayName
-          || null
-      },
-      team: {
-        id: issue.estimatedTeamId || link.teamId,
-        name: names.teamName
-      },
-      session: {
-        id: link.sessionId,
-        name: names.sessionName
+    const requestPayload = {
+      ...payload,
+      finalizedBy: payload.finalizedBy || {
+        uid: currentUser.uid,
+        email: currentUser.email || null,
+        displayName: currentUser.displayName || null
       },
       source: "team_poker"
     };
 
-    const response = await fetch(integrationConfig.endpoint, {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${token}`
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(requestPayload)
     });
 
-    const result = await response.json().catch(() => ({}));
+    const result = await response
+      .json()
+      .catch(() => ({}));
 
     if (!response.ok || result.ok !== true) {
       throw new Error(
-        result.error
-        || `HTTP ${response.status}`
+        result.error || `HTTP ${response.status}`
       );
     }
 
-    await writeSyncState(issueRef, {
-      status: result.status || "synced",
+    const status = result.status || "synced";
+
+    writeStoredSync(payload, {
+      status,
       targetTaskId: result.taskId || null,
       workspaceId: result.workspaceId || "main",
-      estimateVersion: version,
-      syncedAt: new Date().toISOString(),
-      lastError: null
+      syncedAt: new Date().toISOString()
     });
-  } catch (error) {
-    console.error(error);
 
-    try {
-      await writeSyncState(issueRef, {
-        status: "error",
-        estimateVersion: version,
-        lastError: String(
-          error?.message || error
-        ).slice(0, 1000)
-      });
-    } catch (stateError) {
-      console.error(stateError);
-    }
+    retryAfterByKey.delete(key);
+
+    setStatus(
+      `Передано в общий пул Team_calculator · версия ${
+        payload.estimateVersion
+      }.`,
+      "ok"
+    );
+  } catch (error) {
+    console.error(
+      "Ошибка интеграции Team_poker → Team_calculator",
+      error
+    );
+
+    retryAfterByKey.set(
+      key,
+      Date.now() + RETRY_DELAY_MS
+    );
+
+    writeStoredSync(payload, {
+      status: "error",
+      error: String(
+        error?.message || error
+      ).slice(0, 1000),
+      failedAt: new Date().toISOString()
+    });
+
+    setStatus(
+      `Ошибка передачи в Team_calculator: ${
+        error?.message || error
+      }. Повтор через 30 секунд.`,
+      "error"
+    );
   } finally {
-    if (syncInFlightKey === inFlightKey) {
-      syncInFlightKey = null;
+    if (inFlightKey === key) {
+      inFlightKey = null;
     }
   }
 }
 
-function subscribeToCurrentIssue(db) {
-  if (typeof unsubscribeIssue === "function") {
-    unsubscribeIssue();
-    unsubscribeIssue = null;
-  }
+async function checkAndSync() {
+  renderCurrentState();
 
-  const link = currentIssueLink();
-
-  if (!link) {
-    setStatus(
-      "Откройте задачу. После фиксации оценка будет передана автоматически."
-    );
+  if (!currentUser || !configuredEndpoint()) {
     return;
   }
 
-  unsubscribeIssue = onSnapshot(
-    doc(
-      db,
-      "teams",
-      link.teamId,
-      "sessions",
-      link.sessionId,
-      "issues",
-      link.issueId
-    ),
-    snapshot => {
-      const issue = snapshot.exists()
-        ? snapshot.data()
-        : null;
+  const payload = currentPayload();
 
-      renderSync(issue);
+  if (!payload) {
+    return;
+  }
 
-      if (issue) {
-        sendIssue(db, link, issue);
-      }
-    },
-    error => {
-      console.error(error);
-      setStatus(
-        "Не удалось прочитать статус передачи в Team_calculator.",
-        "error"
-      );
-    }
-  );
+  await sendPayload(payload);
 }
 
 async function waitForFirebaseApp() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (getApps().length) return getApp();
+    if (getApps().length) {
+      return getApp();
+    }
 
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve =>
+      setTimeout(resolve, 100)
+    );
   }
 
   throw new Error(
@@ -436,34 +424,51 @@ async function start() {
   try {
     const app = await waitForFirebaseApp();
     const auth = getAuth(app);
-    const db = getFirestore(
-      app,
-      runtimeConfig.firestoreDatabaseId || "(default)"
-    );
 
     onAuthStateChanged(auth, user => {
-      currentAuthUser = user || null;
-
-      if (user) {
-        subscribeToCurrentIssue(db);
-      } else {
-        if (typeof unsubscribeIssue === "function") {
-          unsubscribeIssue();
-        }
-
-        setStatus(
-          "Войдите, чтобы передавать оценки в Team_calculator."
-        );
-      }
+      currentUser = user || null;
+      checkAndSync();
     });
 
     window.addEventListener(
       "hashchange",
-      () => subscribeToCurrentIssue(db)
+      () => setTimeout(checkAndSync, 300)
     );
+
+    const finalizeButton =
+      document.getElementById("finalizeBtn");
+
+    if (finalizeButton) {
+      finalizeButton.addEventListener(
+        "click",
+        () => setTimeout(checkAndSync, 1500)
+      );
+    }
+
+    pollTimer = window.setInterval(
+      checkAndSync,
+      POLL_INTERVAL_MS
+    );
+
+    window.addEventListener(
+      "beforeunload",
+      () => {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+        }
+      },
+      { once: true }
+    );
+
+    checkAndSync();
   } catch (error) {
     console.error(error);
-    setStatus(error.message, "error");
+    setStatus(
+      `Интеграция Team_calculator не запущена: ${
+        error?.message || error
+      }.`,
+      "error"
+    );
   }
 }
 
