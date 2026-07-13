@@ -636,3 +636,52 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 .issue-audit-marker.moved {
   background: var(--info);
 }
+
+
+.area-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.area-badge.compact {
+  margin-top: 0;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.area-badge.area-backend {
+  border-color: #bfd3f4;
+  background: #edf4ff;
+  color: #2458a6;
+}
+
+.area-badge.area-frontend {
+  border-color: #d7c5f2;
+  background: #f5efff;
+  color: #6b3fa0;
+}
+
+.area-badge.area-unknown {
+  border-color: #e0c9a8;
+  background: #fff7e8;
+  color: #8a5a12;
+}
+
+#issueStatus {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+#issueStatus .area-badge {
+  margin: 0;
+}

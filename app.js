@@ -117,6 +117,92 @@ function currentSession() {
   return state.sessions.find(session => session.id === state.sessionId) || null;
 }
 
+const DEVELOPMENT_AREAS = Object.freeze({
+  backend: "Backend",
+  frontend: "Frontend"
+});
+
+function isValidDevelopmentArea(value) {
+  return Object.prototype.hasOwnProperty.call(
+    DEVELOPMENT_AREAS,
+    String(value || "")
+  );
+}
+
+function developmentAreaLabel(value) {
+  return isValidDevelopmentArea(value)
+    ? DEVELOPMENT_AREAS[value]
+    : "Направление не определено";
+}
+
+function developmentAreaClass(value) {
+  return isValidDevelopmentArea(value)
+    ? `area-${value}`
+    : "area-unknown";
+}
+
+function sessionDevelopmentArea(session = currentSession()) {
+  return isValidDevelopmentArea(session?.developmentArea)
+    ? session.developmentArea
+    : null;
+}
+
+function finalizationEstimatedRole(issue = state.issue) {
+  if (isValidDevelopmentArea(issue?.estimatedRole)) {
+    return issue.estimatedRole;
+  }
+
+  // Уже зафиксированная старая оценка без направления остаётся исторической.
+  if (issue?.finalEstimate != null) {
+    return null;
+  }
+
+  const sessionArea = sessionDevelopmentArea();
+  if (sessionArea) return sessionArea;
+
+  const teamArea = currentTeam()?.developmentArea;
+  return isValidDevelopmentArea(teamArea) ? teamArea : null;
+}
+
+function currentTeamSnapshot() {
+  const team = currentTeam();
+
+  return {
+    id: state.teamId,
+    name: team?.name || "",
+    developmentArea: isValidDevelopmentArea(team?.developmentArea)
+      ? team.developmentArea
+      : null
+  };
+}
+
+function renderDevelopmentAreaBadges() {
+  const team = currentTeam();
+  const session = currentSession();
+
+  const teamBadge = $("teamDevelopmentArea");
+  if (teamBadge) {
+    const area = isValidDevelopmentArea(team?.developmentArea)
+      ? team.developmentArea
+      : null;
+
+    teamBadge.className =
+      `area-badge ${developmentAreaClass(area)}`;
+    teamBadge.textContent = developmentAreaLabel(area);
+  }
+
+  const sessionBadge = $("sessionDevelopmentArea");
+  if (sessionBadge) {
+    const area = sessionDevelopmentArea(session);
+
+    sessionBadge.className =
+      `area-badge ${developmentAreaClass(area)}`;
+    sessionBadge.textContent = area
+      ? `Направление оценки: ${developmentAreaLabel(area)}`
+      : "Направление оценки не определено";
+  }
+}
+
 function isLead() {
   const email = normalizeEmail(currentUser?.email);
   const team = currentTeam();
@@ -377,6 +463,10 @@ function bindEvents() {
 
   $("finalizeBtn").addEventListener("click", finalizeEstimate);
   $("copyEstimateBtn").addEventListener("click", copyEstimate);
+  $("copyTeamCalendarBtn").addEventListener(
+    "click",
+    copyTeamCalendarPayload
+  );
   $("copyIssueLinkBtn").addEventListener("click", copyIssueLink);
 
   $("teamSelect").addEventListener("change", event => selectTeam(event.target.value));
@@ -966,6 +1056,7 @@ function startMembersListener() {
 
 function renderTeamControls() {
   const lead = isLead();
+  renderDevelopmentAreaBadges();
 
   $("teamRole").textContent = state.teamId
     ? `Ваша роль: ${lead ? "тимлид" : state.role === "member" ? "участник" : "нет активного членства"}`
@@ -984,10 +1075,18 @@ function renderTeamControls() {
 
 async function createTeam() {
   const name = $("newTeamName").value.trim();
+  const developmentArea = $("newTeamDevelopmentArea").value;
   const target = $("teamDialogMessage");
 
   setFormMessage(target);
   if (!name) return setFormMessage(target, "Укажите название команды.");
+
+  if (!isValidDevelopmentArea(developmentArea)) {
+    return setFormMessage(
+      target,
+      "Выберите направление разработки: Backend или Frontend."
+    );
+  }
 
   await withButton($("createTeamBtn"), "Создание...", async () => {
     try {
@@ -998,6 +1097,8 @@ async function createTeam() {
         ownerEmail: email,
         memberEmails: [email],
         leadEmails: [email],
+        developmentArea,
+        developmentAreaUpdatedAt: serverTimestamp(),
         createdAt: serverTimestamp()
       });
 
@@ -1010,6 +1111,7 @@ async function createTeam() {
       });
 
       $("newTeamName").value = "";
+      $("newTeamDevelopmentArea").value = "";
       closeDialog("teamDialog");
       localStorage.setItem("planningPoker.firebase.teamId", teamRef.id);
       toast(`Команда «${name}» создана.`, "success");
@@ -1026,6 +1128,10 @@ function openEditTeamDialog() {
   if (!team) return;
 
   $("editTeamName").value = team.name || "";
+  $("editTeamDevelopmentArea").value =
+    isValidDevelopmentArea(team.developmentArea)
+      ? team.developmentArea
+      : "";
   setFormMessage($("editTeamMessage"));
   openDialog("editTeamDialog");
 
@@ -1039,6 +1145,7 @@ async function saveTeamChanges() {
   if (!isLead() || !state.teamId) return;
 
   const name = $("editTeamName").value.trim();
+  const developmentArea = $("editTeamDevelopmentArea").value;
   const target = $("editTeamMessage");
 
   setFormMessage(target);
@@ -1051,12 +1158,21 @@ async function saveTeamChanges() {
     return setFormMessage(target, "Название команды должно быть не длиннее 100 символов.");
   }
 
+  if (!isValidDevelopmentArea(developmentArea)) {
+    return setFormMessage(
+      target,
+      "Выберите направление разработки: Backend или Frontend."
+    );
+  }
+
   await withButton($("saveTeamChangesBtn"), "Сохранение...", async () => {
     try {
       await updateDoc(
         doc(db, "teams", state.teamId),
         {
           name,
+          developmentArea,
+          developmentAreaUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }
       );
@@ -1420,6 +1536,9 @@ function renderSessions() {
         <option value="${session.id}" ${session.id === state.sessionId ? "selected" : ""}>
           ${escapeHtml(session.name)}
           ${session.iteration ? ` — ${escapeHtml(session.iteration)}` : ""}
+          ${session.developmentArea
+            ? ` · ${escapeHtml(developmentAreaLabel(session.developmentArea))}`
+            : ""}
           ${session.status === "finished" ? " ✓" : ""}
         </option>
       `).join("")
@@ -1464,9 +1583,17 @@ async function createSession() {
   const name = $("sessionName").value.trim();
   const iteration = $("sessionIteration").value.trim();
   const target = $("sessionDialogMessage");
+  const teamSnapshot = currentTeamSnapshot();
 
   setFormMessage(target);
   if (!name) return setFormMessage(target, "Укажите название сессии.");
+
+  if (!isValidDevelopmentArea(teamSnapshot.developmentArea)) {
+    return setFormMessage(
+      target,
+      "Для команды не задано направление разработки. Укажите Backend или Frontend в настройках команды."
+    );
+  }
 
   await withButton($("createSessionBtn"), "Создание...", async () => {
     try {
@@ -1476,6 +1603,10 @@ async function createSession() {
           name,
           iteration: iteration || null,
           status: "active",
+          developmentArea: teamSnapshot.developmentArea,
+          estimatedTeamId: teamSnapshot.id,
+          estimatedTeamName: teamSnapshot.name,
+          developmentAreaCapturedAt: serverTimestamp(),
           createdByUid: currentUser.uid,
           createdByEmail: normalizeEmail(currentUser.email),
           createdAt: serverTimestamp()
@@ -2065,6 +2196,19 @@ async function saveIssueChanges() {
         updatedAt: serverTimestamp()
       });
 
+      if (!isValidDevelopmentArea(session?.developmentArea)) {
+        batch.update(
+          doc(db, "teams", state.teamId, "sessions", state.sessionId),
+          {
+            developmentArea: estimatedRole,
+            estimatedTeamId: teamSnapshot.id,
+            estimatedTeamName: teamSnapshot.name,
+            developmentAreaCapturedAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          }
+        );
+      }
+
       batch.set(
         auditRef,
         buildIssueAuditEvent({
@@ -2094,11 +2238,22 @@ async function createIssue() {
   const gitlabUrl = $("newIssueUrl").value.trim();
   const description = $("newIssueDescription").value.trim();
   const target = $("issueDialogMessage");
+  const session = currentSession();
+  const teamSnapshot = currentTeamSnapshot();
+  const estimatedRole = sessionDevelopmentArea(session)
+    || teamSnapshot.developmentArea;
 
   setFormMessage(target);
   if (!title) return setFormMessage(target, "Укажите название задачи.");
   if (!isValidExternalUrl(gitlabUrl)) {
     return setFormMessage(target, "Ссылка должна начинаться с http:// или https://.");
+  }
+
+  if (!isValidDevelopmentArea(estimatedRole)) {
+    return setFormMessage(
+      target,
+      "Для команды не задано направление разработки. Укажите Backend или Frontend в настройках команды."
+    );
   }
 
   const maxOrder = state.issues.reduce(
@@ -2127,6 +2282,11 @@ async function createIssue() {
         currentRound: 1,
         status: "pending",
         finalEstimate: null,
+        estimatedRole,
+        estimatedTeamId: teamSnapshot.id,
+        estimatedTeamName: teamSnapshot.name,
+        estimateVersion: 0,
+        developmentAreaCapturedAt: serverTimestamp(),
         sortOrder: maxOrder + 10,
         createdByUid: actor.uid,
         createdByEmail: actor.email,
@@ -2360,7 +2520,12 @@ async function loadLegacyHistoricalVotes() {
   }
 }
 
-async function buildRoundSnapshot(round, status, finalEstimate = null) {
+async function buildRoundSnapshot(
+  round,
+  status,
+  finalEstimate = null,
+  finalization = {}
+) {
   const votesSnapshot = await getDocs(
     query(
       votesCollectionRef(),
@@ -2390,12 +2555,40 @@ async function buildRoundSnapshot(round, status, finalEstimate = null) {
     median: stats?.median ?? null,
     max: stats?.max ?? null,
     finalEstimate: finalEstimate ?? existing.finalEstimate ?? null,
+    estimatedRole:
+      finalization.estimatedRole
+      ?? existing.estimatedRole
+      ?? state.issue?.estimatedRole
+      ?? null,
+    estimatedTeamId:
+      finalization.estimatedTeamId
+      ?? existing.estimatedTeamId
+      ?? state.issue?.estimatedTeamId
+      ?? state.teamId
+      ?? null,
+    estimatedTeamName:
+      finalization.estimatedTeamName
+      ?? existing.estimatedTeamName
+      ?? state.issue?.estimatedTeamName
+      ?? currentTeam()?.name
+      ?? null,
+    estimateVersion:
+      finalization.estimateVersion
+      ?? existing.estimateVersion
+      ?? state.issue?.estimateVersion
+      ?? null,
     revealedAt: existing.revealedAt || serverTimestamp(),
     updatedAt: serverTimestamp()
   };
 
   if (status === "finalized") {
     payload.finalizedAt = serverTimestamp();
+    payload.finalizedByUid =
+      finalization.finalizedByUid ?? null;
+    payload.finalizedByEmail =
+      finalization.finalizedByEmail ?? null;
+    payload.finalizedByDisplayName =
+      finalization.finalizedByDisplayName ?? null;
   }
 
   return payload;
@@ -2463,6 +2656,14 @@ function renderRoundHistory() {
       existing.finalEstimate = Number(state.issue.finalEstimate);
     }
 
+    if (state.issue.estimatedRole) {
+      existing.estimatedRole = state.issue.estimatedRole;
+    }
+
+    if (state.issue.estimateVersion != null) {
+      existing.estimateVersion = state.issue.estimateVersion;
+    }
+
     roundsByNumber.set(round, existing);
   }
 
@@ -2486,6 +2687,10 @@ function renderRoundHistory() {
     const finalEstimate = item.finalEstimate != null
       ? Number(item.finalEstimate)
       : null;
+    const estimatedRole = isValidDevelopmentArea(item.estimatedRole)
+      ? item.estimatedRole
+      : null;
+    const estimateVersion = Number(item.estimateVersion || 0) || null;
 
     const date = formatHistoryDate(item.finalizedAt || item.revealedAt);
     const votesHtml = item.votes.length
@@ -2514,7 +2719,11 @@ function renderRoundHistory() {
             </span>
           </span>
           <span class="history-final ${finalEstimate == null ? "empty" : ""}">
-            ${finalEstimate == null ? "Итог не зафиксирован" : `Итог: ${finalEstimate} ч.д.`}
+            ${
+              finalEstimate == null
+                ? "Итог не зафиксирован"
+                : `${developmentAreaLabel(estimatedRole)} · ${finalEstimate} ч.д.${estimateVersion ? ` · v${estimateVersion}` : ""}`
+            }
           </span>
         </summary>
 
@@ -2532,6 +2741,12 @@ function renderRoundHistory() {
           ${
             item.status === "legacy"
               ? '<div class="muted small">Раунд создан до появления журнала итоговых оценок.</div>'
+              : ""
+          }
+
+          ${
+            finalEstimate != null && !estimatedRole
+              ? '<div class="muted small">Направление не определено.</div>'
               : ""
           }
         </div>
@@ -2565,9 +2780,16 @@ function renderIssue() {
       ? "orange"
       : "";
 
+  const role = isValidDevelopmentArea(issue.estimatedRole)
+    ? issue.estimatedRole
+    : finalizationEstimatedRole(issue);
+
   $("issueStatus").innerHTML = `
     <span class="status-pill ${statusClass}">
       ${escapeHtml(issueStatusText(issue.status))}
+    </span>
+    <span class="area-badge compact ${developmentAreaClass(role)}">
+      ${escapeHtml(developmentAreaLabel(role))}
     </span>
   `;
 
@@ -2608,15 +2830,39 @@ function renderIssue() {
   renderRoundHistory();
   syncCurrentTaskLink();
 
-  $("finalEstimate").value = issue.finalEstimate || suggestedEstimate() || "";
-  $("finalizeBtn").disabled = !isLead() || !["revealed", "estimated"].includes(issue.status);
+  const estimatedRole = finalizationEstimatedRole(issue);
+  const canFinalizeStatus = ["revealed", "estimated"].includes(issue.status);
+
+  $("finalEstimate").value =
+    issue.finalEstimate || suggestedEstimate() || "";
+
+  $("finalizeBtn").disabled =
+    !isLead() ||
+    !canFinalizeStatus ||
+    !isValidDevelopmentArea(estimatedRole);
+
   $("copyEstimateBtn").disabled = !$("finalEstimate").value;
 
-  setFormMessage(
-    $("finalMessage"),
-    issue.finalEstimate ? `Зафиксировано: ${issue.finalEstimate} ч.д.` : "",
-    "success"
-  );
+  $("copyTeamCalendarBtn").disabled =
+    issue.finalEstimate == null ||
+    !isValidDevelopmentArea(issue.estimatedRole) ||
+    !issue.estimateVersion;
+
+  if (!isValidDevelopmentArea(estimatedRole) && canFinalizeStatus) {
+    setFormMessage(
+      $("finalMessage"),
+      "Для команды не задано направление разработки. Укажите Backend или Frontend в настройках команды.",
+      "error"
+    );
+  } else if (issue.finalEstimate != null) {
+    setFormMessage(
+      $("finalMessage"),
+      `Зафиксировано: ${developmentAreaLabel(issue.estimatedRole)} · ${issue.finalEstimate} ч.д. · версия ${issue.estimateVersion || 1}`,
+      "success"
+    );
+  } else {
+    setFormMessage($("finalMessage"));
+  }
 }
 
 function renderLeadIssueActions() {
@@ -2759,6 +3005,10 @@ async function issueAction(action) {
         status: "voting",
         currentRound: round + 1,
         finalEstimate: null,
+        finalizedAt: null,
+        finalizedByUid: null,
+        finalizedByEmail: null,
+        finalizedByDisplayName: null,
         updatedAt: serverTimestamp()
       });
 
@@ -3272,9 +3522,18 @@ async function finalizeEstimate() {
 
   const value = Number($("finalEstimate").value);
   const target = $("finalMessage");
+  const estimatedRole = finalizationEstimatedRole();
+  const teamSnapshot = currentTeamSnapshot();
 
   if (!Number.isFinite(value) || value <= 0) {
     return setFormMessage(target, "Укажите итоговую оценку.");
+  }
+
+  if (!isValidDevelopmentArea(estimatedRole)) {
+    return setFormMessage(
+      target,
+      "Для команды не задано направление разработки. Укажите Backend или Frontend в настройках команды."
+    );
   }
 
   if (!SCALE.includes(value)) {
@@ -3286,22 +3545,142 @@ async function finalizeEstimate() {
 
   try {
     const round = Number(state.issue.currentRound);
-    const snapshot = await buildRoundSnapshot(round, "finalized", value);
+    const nextVersion =
+      Number(state.issue.estimateVersion || 0) + 1;
+    const actor = currentActorSnapshot();
+
+    const finalization = {
+      estimatedRole,
+      estimatedTeamId:
+        state.issue.estimatedTeamId || teamSnapshot.id,
+      estimatedTeamName:
+        state.issue.estimatedTeamName || teamSnapshot.name,
+      estimateVersion: nextVersion,
+      finalizedByUid: actor.uid,
+      finalizedByEmail: actor.email,
+      finalizedByDisplayName: actor.displayName
+    };
+
+    const snapshot = await buildRoundSnapshot(
+      round,
+      "finalized",
+      value,
+      finalization
+    );
 
     const batch = writeBatch(db);
-    batch.set(roundDocumentRef(round), snapshot, { merge: true });
+
+    batch.set(
+      roundDocumentRef(round),
+      snapshot,
+      { merge: true }
+    );
+
     batch.update(currentIssueRef(), {
       finalEstimate: value,
+      estimatedRole,
+      estimatedTeamId: finalization.estimatedTeamId,
+      estimatedTeamName: finalization.estimatedTeamName,
+      estimateVersion: nextVersion,
+      finalizedAt: serverTimestamp(),
+      finalizedByUid: actor.uid,
+      finalizedByEmail: actor.email,
+      finalizedByDisplayName: actor.displayName,
       status: "estimated",
       updatedAt: serverTimestamp()
     });
 
+    // Для существующей сессии без снимка направления фиксируем его
+    // в момент первой новой оценки.
+    if (!isValidDevelopmentArea(currentSession()?.developmentArea)) {
+      batch.update(
+        doc(db, "teams", state.teamId, "sessions", state.sessionId),
+        {
+          developmentArea: estimatedRole,
+          estimatedTeamId: teamSnapshot.id,
+          estimatedTeamName: teamSnapshot.name,
+          developmentAreaCapturedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }
+      );
+    }
+
     await batch.commit();
-    toast("Итоговая оценка и история раунда сохранены.", "success");
+
+    toast(
+      `Оценка сохранена: ${developmentAreaLabel(estimatedRole)} · ${value} ч.д. · версия ${nextVersion}.`,
+      "success"
+    );
   } catch (error) {
     handleError(error, target);
   }
 }
+
+function timestampToIso(value) {
+  const milliseconds = timestampValue(value);
+  return milliseconds
+    ? new Date(milliseconds).toISOString()
+    : null;
+}
+
+function buildTeamCalendarEstimatePayload(issue = state.issue) {
+  if (!issue || issue.finalEstimate == null) return null;
+  if (!isValidDevelopmentArea(issue.estimatedRole)) return null;
+
+  return {
+    taskId: issue.id,
+    title: issue.title || "",
+    externalTaskUrl: issue.gitlabUrl || null,
+    estimatedRole: issue.estimatedRole,
+    finalEstimate: Number(issue.finalEstimate),
+    estimateVersion: Number(issue.estimateVersion || 1),
+    finalizedAt: timestampToIso(issue.finalizedAt),
+    team: {
+      id: issue.estimatedTeamId || state.teamId,
+      name: issue.estimatedTeamName || currentTeam()?.name || ""
+    },
+    session: {
+      id: state.sessionId,
+      name: currentSession()?.name || ""
+    },
+    source: "team_poker"
+  };
+}
+
+async function copyTeamCalendarPayload() {
+  const payload = buildTeamCalendarEstimatePayload();
+
+  if (!payload) {
+    setFormMessage(
+      $("finalMessage"),
+      "Оценку нельзя передать в Team_calendar без зафиксированной оценки и estimatedRole.",
+      "error"
+    );
+    return;
+  }
+
+  const json = JSON.stringify(payload, null, 2);
+
+  try {
+    await navigator.clipboard.writeText(json);
+    setFormMessage(
+      $("finalMessage"),
+      "Данные для Team_calendar скопированы.",
+      "success"
+    );
+  } catch {
+    window.prompt(
+      "Скопируйте данные для Team_calendar:",
+      json
+    );
+  }
+}
+
+// Точка расширения для будущего прямого вызова интеграции.
+window.TeamPokerIntegration = {
+  getCurrentEstimatePayload: () =>
+    buildTeamCalendarEstimatePayload()
+};
 
 async function copyEstimate() {
   const value = Number($("finalEstimate").value);

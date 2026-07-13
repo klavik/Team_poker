@@ -68,6 +68,9 @@
         </div>
 
         <select id="teamSelect" aria-label="Команда"></select>
+        <div id="teamDevelopmentArea" class="area-badge area-unknown">
+          Направление не определено
+        </div>
         <div id="teamRole" class="muted small"></div>
 
         <div class="actions">
@@ -84,6 +87,9 @@
         </div>
 
         <select id="sessionSelect" aria-label="Сессия"></select>
+        <div id="sessionDevelopmentArea" class="area-badge area-unknown">
+          Направление оценки не определено
+        </div>
 
         <div class="actions">
           <button id="editSessionBtn" class="button secondary" type="button">Редактировать</button>
@@ -199,6 +205,7 @@
               <div class="actions">
                 <button id="finalizeBtn" class="button primary" type="button">Зафиксировать</button>
                 <button id="copyEstimateBtn" class="button secondary" type="button">Копировать команды GitLab</button>
+                <button id="copyTeamCalendarBtn" class="button secondary" type="button">Данные Team_calendar</button>
               </div>
 
               <div id="finalMessage" class="form-message"></div>
@@ -247,7 +254,14 @@
     </div>
 
     <label for="newTeamName">Название</label>
-    <input id="newTeamName" placeholder="Backend">
+    <input id="newTeamName" placeholder="MARS Backend">
+
+    <label for="newTeamDevelopmentArea">Направление разработки</label>
+    <select id="newTeamDevelopmentArea" required>
+      <option value="">Выберите направление</option>
+      <option value="backend">Backend</option>
+      <option value="frontend">Frontend</option>
+    </select>
 
     <div class="actions">
       <button id="createTeamBtn" class="button primary" type="button">Создать</button>
@@ -267,6 +281,18 @@
 
     <label for="editTeamName">Название</label>
     <input id="editTeamName" maxlength="100">
+
+    <label for="editTeamDevelopmentArea">Направление разработки</label>
+    <select id="editTeamDevelopmentArea" required>
+      <option value="">Выберите направление</option>
+      <option value="backend">Backend</option>
+      <option value="frontend">Frontend</option>
+    </select>
+
+    <div class="message info">
+      Изменение направления команды не меняет направление уже созданных
+      задач и зафиксированных оценок.
+    </div>
 
     <div class="actions">
       <button id="saveTeamChangesBtn" class="button primary" type="button">Сохранить</button>
