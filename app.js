@@ -76,6 +76,8 @@ let unsubscribeRounds = null;
 let unsubscribeUsers = null;
 let activeVoteSubscriptionKey = null;
 let editingMemberEmail = null;
+let pendingTaskLink = readTaskLinkFromHash();
+let taskLinkErrorShown = false;
 
 const $ = id => document.getElementById(id);
 
@@ -361,6 +363,7 @@ function bindEvents() {
 
   $("finalizeBtn").addEventListener("click", finalizeEstimate);
   $("copyEstimateBtn").addEventListener("click", copyEstimate);
+  $("copyIssueLinkBtn").addEventListener("click", copyIssueLink);
 
   $("teamSelect").addEventListener("change", event => selectTeam(event.target.value));
   $("sessionSelect").addEventListener("change", event => selectSession(event.target.value));
@@ -396,6 +399,12 @@ function bindEvents() {
 
   window.addEventListener("offline", () => {
     showConnectionProblem("Нет подключения к интернету. Изменения будут сохранены локально.");
+  });
+
+  window.addEventListener("hashchange", () => {
+    pendingTaskLink = readTaskLinkFromHash();
+    taskLinkErrorShown = false;
+    applyPendingTaskLink();
   });
 }
 
@@ -546,6 +555,100 @@ function fillSelectedMemberName() {
   }
 }
 
+function readTaskLinkFromHash() {
+  const rawHash = window.location.hash.replace(/^#/, "");
+  if (!rawHash) return null;
+
+  const params = new URLSearchParams(rawHash);
+  const teamId = params.get("team");
+  const sessionId = params.get("session");
+  const issueId = params.get("issue");
+
+  if (!teamId || !sessionId || !issueId) return null;
+
+  return { teamId, sessionId, issueId };
+}
+
+function buildTaskLink(teamId = state.teamId, sessionId = state.sessionId, issueId = state.issueId) {
+  if (!teamId || !sessionId || !issueId) return null;
+
+  const url = new URL(window.location.href);
+  url.hash = new URLSearchParams({
+    team: teamId,
+    session: sessionId,
+    issue: issueId
+  }).toString();
+
+  return url.toString();
+}
+
+function syncCurrentTaskLink() {
+  if (pendingTaskLink || !state.teamId || !state.sessionId || !state.issueId) {
+    return;
+  }
+
+  const taskLink = buildTaskLink();
+  if (!taskLink) return;
+
+  const nextUrl = new URL(taskLink);
+  if (window.location.hash !== nextUrl.hash) {
+    window.history.replaceState(null, "", nextUrl.hash);
+  }
+}
+
+function showTaskLinkError(message) {
+  if (taskLinkErrorShown) return;
+  taskLinkErrorShown = true;
+  toast(message, "error", 7000);
+}
+
+function applyPendingTaskLink() {
+  if (!pendingTaskLink || !currentUser) return;
+
+  const { teamId, sessionId, issueId } = pendingTaskLink;
+
+  if (state.teamId !== teamId) {
+    if (state.teams.some(team => team.id === teamId)) {
+      selectTeam(teamId);
+    }
+    return;
+  }
+
+  if (state.sessionId !== sessionId) {
+    if (state.sessions.some(session => session.id === sessionId)) {
+      selectSession(sessionId);
+    }
+    return;
+  }
+
+  if (state.issueId !== issueId) {
+    if (state.issues.some(issue => issue.id === issueId)) {
+      selectIssue(issueId, { preserveHash: true });
+    }
+    return;
+  }
+
+  pendingTaskLink = null;
+  taskLinkErrorShown = false;
+  syncCurrentTaskLink();
+}
+
+async function copyIssueLink() {
+  const link = buildTaskLink();
+
+  if (!link) {
+    toast("Сначала выберите задачу.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(link);
+    toast("Ссылка на задачу скопирована.", "success", 2500);
+  } catch {
+    window.prompt("Скопируйте ссылку на задачу:", link);
+  }
+}
+
 function renderAuth() {
   show($("loginView"), !currentUser);
   show($("appView"), Boolean(currentUser));
@@ -650,11 +753,14 @@ function startTeamsListener() {
       if (!snapshot.metadata.fromCache) hideConnectionProblem();
 
       const storedTeamId = localStorage.getItem("planningPoker.firebase.teamId");
-      const nextTeamId = state.teams.some(team => team.id === state.teamId)
-        ? state.teamId
-        : state.teams.some(team => team.id === storedTeamId)
-          ? storedTeamId
-          : state.teams[0]?.id || null;
+      const linkedTeamId = pendingTaskLink?.teamId;
+      const nextTeamId = linkedTeamId && state.teams.some(team => team.id === linkedTeamId)
+        ? linkedTeamId
+        : state.teams.some(team => team.id === state.teamId)
+          ? state.teamId
+          : state.teams.some(team => team.id === storedTeamId)
+            ? storedTeamId
+            : state.teams[0]?.id || null;
 
       renderTeams();
 
@@ -665,6 +771,17 @@ function startTeamsListener() {
       }
 
       if (!nextTeamId) resetTeamDependentState();
+
+      if (
+        pendingTaskLink?.teamId &&
+        !state.teams.some(team => team.id === pendingTaskLink.teamId) &&
+        !snapshot.metadata.fromCache
+      ) {
+        showTaskLinkError("Команда из ссылки не найдена или у вас нет к ней доступа.");
+        pendingTaskLink = null;
+      } else {
+        applyPendingTaskLink();
+      }
     },
     error => handleError(error)
   );
@@ -1101,13 +1218,19 @@ function startSessionsListener() {
         .sort((a, b) => timestampValue(b.createdAt) - timestampValue(a.createdAt));
 
       const storedSessionId = localStorage.getItem(`planningPoker.firebase.sessionId.${state.teamId}`);
-      const nextSessionId = state.sessions.some(session => session.id === state.sessionId)
-        ? state.sessionId
-        : state.sessions.some(session => session.id === storedSessionId)
-          ? storedSessionId
-          : state.sessions.find(session => session.status === "active")?.id
-            || state.sessions[0]?.id
-            || null;
+      const linkedSessionId = pendingTaskLink?.teamId === state.teamId
+        ? pendingTaskLink.sessionId
+        : null;
+
+      const nextSessionId = linkedSessionId && state.sessions.some(session => session.id === linkedSessionId)
+        ? linkedSessionId
+        : state.sessions.some(session => session.id === state.sessionId)
+          ? state.sessionId
+          : state.sessions.some(session => session.id === storedSessionId)
+            ? storedSessionId
+            : state.sessions.find(session => session.status === "active")?.id
+              || state.sessions[0]?.id
+              || null;
 
       renderSessions();
 
@@ -1125,6 +1248,18 @@ function startSessionsListener() {
         renderIssues();
         show($("welcomeCard"));
         show($("issueCard"), false);
+      }
+
+      if (
+        pendingTaskLink?.teamId === state.teamId &&
+        pendingTaskLink?.sessionId &&
+        !state.sessions.some(session => session.id === pendingTaskLink.sessionId) &&
+        !snapshot.metadata.fromCache
+      ) {
+        showTaskLinkError("Сессия из ссылки не найдена или была удалена.");
+        pendingTaskLink = null;
+      } else {
+        applyPendingTaskLink();
       }
     },
     error => handleError(error)
@@ -1243,11 +1378,20 @@ function startIssuesListener() {
         });
 
       const previousIssue = state.issue;
-      const nextIssueId = state.issues.some(issue => issue.id === state.issueId)
-        ? state.issueId
-        : state.issues.find(issue => issue.status !== "estimated")?.id
-          || state.issues[0]?.id
-          || null;
+      const linkedIssueId = (
+        pendingTaskLink?.teamId === state.teamId &&
+        pendingTaskLink?.sessionId === state.sessionId
+      )
+        ? pendingTaskLink.issueId
+        : null;
+
+      const nextIssueId = linkedIssueId && state.issues.some(issue => issue.id === linkedIssueId)
+        ? linkedIssueId
+        : state.issues.some(issue => issue.id === state.issueId)
+          ? state.issueId
+          : state.issues.find(issue => issue.status !== "estimated")?.id
+            || state.issues[0]?.id
+            || null;
 
       state.issueId = nextIssueId;
       state.issue = state.issues.find(issue => issue.id === nextIssueId) || null;
@@ -1275,6 +1419,21 @@ function startIssuesListener() {
       ) {
         renderIssue();
       }
+
+      if (
+        pendingTaskLink?.teamId === state.teamId &&
+        pendingTaskLink?.sessionId === state.sessionId &&
+        pendingTaskLink?.issueId &&
+        !state.issues.some(issue => issue.id === pendingTaskLink.issueId) &&
+        !snapshot.metadata.fromCache
+      ) {
+        showTaskLinkError("Задача из ссылки не найдена или была удалена.");
+        pendingTaskLink = null;
+      } else {
+        applyPendingTaskLink();
+      }
+
+      syncCurrentTaskLink();
     },
     error => handleError(error)
   );
@@ -1312,7 +1471,7 @@ function renderIssues() {
   });
 }
 
-function selectIssue(issueId) {
+function selectIssue(issueId, options = {}) {
   state.issueId = issueId;
   state.issue = state.issues.find(issue => issue.id === issueId) || null;
   renderIssues();
@@ -1320,6 +1479,12 @@ function selectIssue(issueId) {
   if (state.issue) {
     startVoteListeners();
     renderIssue();
+
+    if (!options.preserveHash) {
+      pendingTaskLink = null;
+      taskLinkErrorShown = false;
+      syncCurrentTaskLink();
+    }
   }
 }
 
@@ -1775,6 +1940,7 @@ function renderIssue() {
   renderLeadIssueActions();
   renderResults();
   renderRoundHistory();
+  syncCurrentTaskLink();
 
   $("finalEstimate").value = issue.finalEstimate || suggestedEstimate() || "";
   $("finalizeBtn").disabled = !isLead() || !["revealed", "estimated"].includes(issue.status);
