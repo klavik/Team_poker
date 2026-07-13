@@ -148,20 +148,9 @@ function sessionDevelopmentArea(session = currentSession()) {
 }
 
 function finalizationEstimatedRole(issue = state.issue) {
-  if (isValidDevelopmentArea(issue?.estimatedRole)) {
-    return issue.estimatedRole;
-  }
-
-  // Уже зафиксированная старая оценка без направления остаётся исторической.
-  if (issue?.finalEstimate != null) {
-    return null;
-  }
-
-  const sessionArea = sessionDevelopmentArea();
-  if (sessionArea) return sessionArea;
-
-  const teamArea = currentTeam()?.developmentArea;
-  return isValidDevelopmentArea(teamArea) ? teamArea : null;
+  return isValidDevelopmentArea(issue?.estimatedRole)
+    ? issue.estimatedRole
+    : null;
 }
 
 function currentTeamSnapshot() {
@@ -562,6 +551,10 @@ function bindEvents() {
   $("createIssueBtn").addEventListener("click", createIssue);
   $("openIssueAuditBtn").addEventListener("click", openIssueAuditDialog);
   $("saveIssueChangesBtn").addEventListener("click", saveIssueChanges);
+  $("saveEstimatedRoleBtn").addEventListener(
+    "click",
+    assignEstimatedRole
+  );
 
   $("finalizeBtn").addEventListener("click", finalizeEstimate);
   $("copyEstimateBtn").addEventListener("click", copyEstimate);
@@ -2046,7 +2039,8 @@ function issueAuditActionText(action) {
     edited: "отредактировал задачу",
     deleted: "удалил задачу",
     moved_out: "перенёс задачу в другую сессию",
-    moved_in: "перенёс задачу в эту сессию"
+    moved_in: "перенёс задачу в эту сессию",
+    estimated_role_assigned: "указал направление оценки"
   })[action] || action;
 }
 
@@ -2056,7 +2050,8 @@ function issueAuditActionClass(action) {
     edited: "edited",
     deleted: "deleted",
     moved_out: "moved",
-    moved_in: "moved"
+    moved_in: "moved",
+    estimated_role_assigned: "direction"
   })[action] || "";
 }
 
@@ -2201,6 +2196,17 @@ function renderIssueAuthorMeta() {
 
   const editedAt = formatHistoryDate(issue.contentUpdatedAt);
 
+  const directionAssignerName = issue.estimatedRoleAssignedByEmail
+    ? issueActorName(
+        issue.estimatedRoleAssignedByEmail,
+        issue.estimatedRoleAssignedByDisplayName
+      )
+    : "";
+
+  const directionAssignedAt = formatHistoryDate(
+    issue.estimatedRoleAssignedAt
+  );
+
   root.innerHTML = `
     <span>
       Добавил:
@@ -2214,6 +2220,18 @@ function renderIssueAuthorMeta() {
               Последнее редактирование:
               <strong>${escapeHtml(editorName)}</strong>
               ${editedAt ? ` · ${escapeHtml(editedAt)}` : ""}
+            </span>
+          `
+        : ""
+    }
+
+    ${
+      directionAssignerName
+        ? `
+            <span>
+              Направление указал:
+              <strong>${escapeHtml(directionAssignerName)}</strong>
+              ${directionAssignedAt ? ` · ${escapeHtml(directionAssignedAt)}` : ""}
             </span>
           `
         : ""
@@ -3129,7 +3147,9 @@ function renderIssue() {
   if (!isValidDevelopmentArea(estimatedRole) && canFinalizeStatus) {
     setFormMessage(
       $("finalMessage"),
-      "Для команды не задано направление разработки. Укажите Backend или Frontend в настройках команды.",
+      isAdmin()
+        ? "Для задачи не задано направление оценки. Нажмите «Указать направление»."
+        : "Для задачи не задано направление оценки. Обратитесь к администратору команды.",
       "error"
     );
   } else if (issue.finalEstimate != null) {
@@ -3160,6 +3180,12 @@ function renderLeadIssueActions() {
   if (editable) {
     buttons.push(
       '<button class="button secondary" type="button" data-issue-action="edit">Редактировать</button>'
+    );
+  }
+
+  if (isAdmin() && !isValidDevelopmentArea(issue.estimatedRole)) {
+    buttons.push(
+      '<button class="button direction-button" type="button" data-issue-action="assign-role">Указать направление</button>'
     );
   }
 
@@ -3215,6 +3241,243 @@ function renderLeadIssueActions() {
   });
 }
 
+function openAssignEstimatedRoleDialog() {
+  const issue = state.issue;
+
+  if (
+    !isAdmin() ||
+    !issue ||
+    isValidDevelopmentArea(issue.estimatedRole)
+  ) {
+    return;
+  }
+
+  const suggestedRole =
+    sessionDevelopmentArea()
+    || (
+      isValidDevelopmentArea(currentTeam()?.developmentArea)
+        ? currentTeam().developmentArea
+        : ""
+    );
+
+  $("assignEstimatedRoleIssueTitle").textContent =
+    issue.title || "Задача без названия";
+
+  $("assignEstimatedRoleCurrentEstimate").textContent =
+    issue.finalEstimate != null
+      ? `${Number(issue.finalEstimate)} ч.д.`
+      : "Итоговая оценка ещё не зафиксирована";
+
+  $("assignEstimatedRoleSelect").value = suggestedRole || "";
+
+  setFormMessage(
+    $("assignEstimatedRoleMessage"),
+    issue.finalEstimate != null
+      ? "Будет добавлено только направление. Итоговая оценка, версия и дата фиксации не изменятся."
+      : "Направление сохранится в задаче и будет использовано при будущей фиксации оценки.",
+    "info"
+  );
+
+  openDialog("assignEstimatedRoleDialog");
+}
+
+async function assignEstimatedRole() {
+  const issue = state.issue;
+  const target = $("assignEstimatedRoleMessage");
+  const estimatedRole = $("assignEstimatedRoleSelect").value;
+
+  if (!isAdmin() || !issue) return;
+
+  if (isValidDevelopmentArea(issue.estimatedRole)) {
+    closeDialog("assignEstimatedRoleDialog");
+    toast("Для задачи направление уже задано.", "success", 2500);
+    return;
+  }
+
+  if (!isValidDevelopmentArea(estimatedRole)) {
+    return setFormMessage(
+      target,
+      "Выберите Backend или Frontend."
+    );
+  }
+
+  const requestedTeamId = state.teamId;
+  const requestedSessionId = state.sessionId;
+  const requestedIssueId = issue.id;
+  const requestedIssueTitle = issue.title || "Задача без названия";
+  const teamSnapshot = currentTeamSnapshot();
+  const actor = currentActorSnapshot();
+
+  await withButton(
+    $("saveEstimatedRoleBtn"),
+    "Сохранение...",
+    async () => {
+      try {
+        setFormMessage(
+          target,
+          "Проверяем задачу и историю оценок.",
+          "info"
+        );
+
+        const issueRef = doc(
+          db,
+          "teams", requestedTeamId,
+          "sessions", requestedSessionId,
+          "issues", requestedIssueId
+        );
+
+        const roundsRef = collection(issueRef, "rounds");
+
+        const [issueSnapshot, roundsSnapshot] = await Promise.all([
+          getDoc(issueRef),
+          getDocs(roundsRef)
+        ]);
+
+        if (!issueSnapshot.exists()) {
+          throw new Error("Задача больше не существует.");
+        }
+
+        const storedIssue = issueSnapshot.data();
+
+        if (isValidDevelopmentArea(storedIssue.estimatedRole)) {
+          throw new Error(
+            `Для задачи уже задано направление: ${developmentAreaLabel(storedIssue.estimatedRole)}.`
+          );
+        }
+
+        const roleFields = {
+          estimatedRole,
+          estimatedTeamId:
+            storedIssue.estimatedTeamId || teamSnapshot.id,
+          estimatedTeamName:
+            storedIssue.estimatedTeamName || teamSnapshot.name,
+          estimatedRoleAssignedByUid: actor.uid,
+          estimatedRoleAssignedByEmail: actor.email,
+          estimatedRoleAssignedByDisplayName: actor.displayName,
+          estimatedRoleAssignedAt: serverTimestamp()
+        };
+
+        const roundsToUpdate = roundsSnapshot.docs.filter(roundDoc => {
+          const round = roundDoc.data();
+          return !isValidDevelopmentArea(round.estimatedRole);
+        });
+
+        /*
+          Обычно раундов единицы. Ограничение оставляет запас до лимита
+          Firestore batch и не допускает частичного изменения задачи.
+        */
+        if (roundsToUpdate.length > 450) {
+          throw new Error(
+            "В задаче слишком много раундов для одной безопасной операции."
+          );
+        }
+
+        const batch = writeBatch(db);
+
+        batch.update(issueRef, {
+          ...roleFields,
+          updatedAt: serverTimestamp()
+        });
+
+        roundsToUpdate.forEach(roundDoc => {
+          batch.update(roundDoc.ref, roleFields);
+        });
+
+        /*
+          В старых задачах отдельного документа текущего раунда могло не быть.
+          Создаём его только для уже зафиксированной оценки и переносим
+          существующие значения без изменения версии и даты фиксации.
+        */
+        const currentRound = Number(storedIssue.currentRound || 1);
+        const hasCurrentRoundDocument = roundsSnapshot.docs.some(
+          roundDoc =>
+            roundDoc.id === String(currentRound)
+            || Number(roundDoc.data().round) === currentRound
+        );
+
+        if (
+          storedIssue.finalEstimate != null &&
+          !hasCurrentRoundDocument
+        ) {
+          const legacyRoundPayload = {
+            round: currentRound,
+            status: "finalized",
+            finalEstimate: Number(storedIssue.finalEstimate),
+            estimatedRole,
+            estimatedTeamId: roleFields.estimatedTeamId,
+            estimatedTeamName: roleFields.estimatedTeamName,
+            estimatedRoleAssignedByUid: actor.uid,
+            estimatedRoleAssignedByEmail: actor.email,
+            estimatedRoleAssignedByDisplayName: actor.displayName,
+            estimatedRoleAssignedAt: serverTimestamp()
+          };
+
+          if (storedIssue.estimateVersion != null) {
+            legacyRoundPayload.estimateVersion =
+              Number(storedIssue.estimateVersion);
+          }
+
+          if (storedIssue.finalizedAt != null) {
+            legacyRoundPayload.finalizedAt =
+              storedIssue.finalizedAt;
+          }
+
+          batch.set(
+            doc(roundsRef, String(currentRound)),
+            legacyRoundPayload,
+            { merge: true }
+          );
+        }
+
+        batch.set(
+          createIssueAuditRef(
+            requestedTeamId,
+            requestedSessionId
+          ),
+          buildIssueAuditEvent({
+            action: "estimated_role_assigned",
+            issueId: requestedIssueId,
+            issueTitle: requestedIssueTitle,
+            changedFields: ["направление оценки"],
+            before: {
+              estimatedRole: null
+            },
+            after: {
+              estimatedRole,
+              estimatedRoleLabel:
+                developmentAreaLabel(estimatedRole),
+              finalEstimate:
+                storedIssue.finalEstimate ?? null,
+              estimateVersion:
+                storedIssue.estimateVersion ?? null,
+              updatedRounds:
+                roundsToUpdate.length
+                + (
+                  storedIssue.finalEstimate != null
+                  && !hasCurrentRoundDocument
+                    ? 1
+                    : 0
+                )
+            }
+          })
+        );
+
+        await batch.commit();
+
+        closeDialog("assignEstimatedRoleDialog");
+
+        toast(
+          `Направление указано: ${developmentAreaLabel(estimatedRole)}. Оценка и история сохранены.`,
+          "success",
+          5000
+        );
+      } catch (error) {
+        handleError(error, target);
+      }
+    }
+  );
+}
+
 function currentIssueRef() {
   return doc(
     db,
@@ -3236,6 +3499,12 @@ async function issueAction(action) {
   if (action === "move") {
     if (!canManageEstimation()) return;
     openMoveIssueDialog();
+    return;
+  }
+
+  if (action === "assign-role") {
+    if (!isAdmin()) return;
+    openAssignEstimatedRoleDialog();
     return;
   }
 
@@ -3846,7 +4115,7 @@ async function finalizeEstimate() {
   if (!isValidDevelopmentArea(estimatedRole)) {
     return setFormMessage(
       target,
-      "Для команды не задано направление разработки. Укажите Backend или Frontend в настройках команды."
+      "Для задачи не задано направление оценки. Администратор должен указать Backend или Frontend."
     );
   }
 
