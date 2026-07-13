@@ -3307,13 +3307,25 @@ async function copyEstimate() {
   const value = Number($("finalEstimate").value);
   if (!value) return;
 
-  const command = `/estimate ${value}d`;
+  const commands = [
+    `/estimate ${value}d`,
+    `/label ~"estimate::done"`
+  ].join("\n");
 
   try {
-    await navigator.clipboard.writeText(command);
-    setFormMessage($("finalMessage"), `Скопировано: ${command}`, "success");
+    await navigator.clipboard.writeText(commands);
+
+    setFormMessage(
+      $("finalMessage"),
+      "Команды GitLab скопированы в буфер обмена.",
+      "success"
+    );
   } catch {
-    setFormMessage($("finalMessage"), `Команда GitLab: ${command}`, "success");
+    setFormMessage(
+      $("finalMessage"),
+      `Команды GitLab:\n${commands}`,
+      "success"
+    );
   }
 }
 
