@@ -262,7 +262,7 @@ textarea { min-height: 95px; resize: vertical; }
   border-bottom: 1px solid var(--border);
 }
 .vote-row { grid-template-columns: minmax(0, 1fr) auto; }
-.member-row { grid-template-columns: minmax(0, 1fr) 110px auto; }
+.member-row { grid-template-columns: minmax(0, 1fr) minmax(150px, 190px) auto; }
 .vote-row:last-child, .member-row:last-child { border-bottom: 0; }
 .member-email { margin-top: 2px; color: var(--muted); font-size: 12px; }
 .role-pill {
@@ -320,7 +320,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .user-email { width: 100%; }
   .metrics, .two-columns { grid-template-columns: 1fr; }
   .poker-grid { grid-template-columns: repeat(3, 1fr); }
-  .member-row { grid-template-columns: minmax(0, 1fr) 88px auto; }
+  .member-row { grid-template-columns: minmax(0, 1fr) 145px auto; }
 
   .member-actions {
     gap: 4px;
@@ -684,4 +684,65 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 
 #issueStatus .area-badge {
   margin: 0;
+}
+
+
+.member-role-select {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.member-owner-note {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-pill.role-admin {
+  background: #f1ecff;
+  color: #5c3c9e;
+}
+
+.role-pill.role-lead {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.role-pill.role-initiator {
+  background: #fff5df;
+  color: #8a5a12;
+}
+
+.role-pill.role-member {
+  background: #edf7f0;
+  color: #287044;
+}
+
+.role-pill.role-unknown {
+  background: #f2f4f7;
+  color: var(--muted);
+}
+
+.role-help {
+  margin-top: 12px;
+}
+
+@media (max-width: 700px) {
+  .member-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .member-actions {
+    justify-content: flex-start;
+  }
+
+  .member-role-select,
+  .role-pill {
+    width: fit-content;
+    max-width: 100%;
+  }
 }
