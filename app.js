@@ -80,6 +80,7 @@ let activeVoteSubscriptionKey = null;
 let editingMemberEmail = null;
 let pendingTaskLink = readTaskLinkFromHash();
 let taskLinkErrorShown = false;
+let resolvingMovedLink = false;
 
 const $ = id => document.getElementById(id);
 
@@ -613,6 +614,81 @@ function showTaskLinkError(message) {
   if (taskLinkErrorShown) return;
   taskLinkErrorShown = true;
   toast(message, "error", 7000);
+}
+
+function issueRedirectId(sessionId, issueId) {
+  return `${sessionId}__${issueId}`;
+}
+
+function issueRedirectRef(teamId, sessionId, issueId) {
+  return doc(
+    db,
+    "teams", teamId,
+    "issue_redirects",
+    issueRedirectId(sessionId, issueId)
+  );
+}
+
+async function resolveMovedIssueLink(link) {
+  if (!link || resolvingMovedLink) return false;
+
+  resolvingMovedLink = true;
+
+  try {
+    let current = { ...link };
+    let moved = false;
+
+    // Поддерживаем цепочку из нескольких переносов одной задачи.
+    for (let step = 0; step < 10; step += 1) {
+      const redirectSnapshot = await getDoc(
+        issueRedirectRef(
+          current.teamId,
+          current.sessionId,
+          current.issueId
+        )
+      );
+
+      if (!redirectSnapshot.exists()) break;
+
+      const redirect = redirectSnapshot.data();
+
+      current = {
+        teamId: current.teamId,
+        sessionId: redirect.targetSessionId,
+        issueId: redirect.targetIssueId || current.issueId
+      };
+
+      moved = true;
+    }
+
+    if (!moved) return false;
+
+    pendingTaskLink = current;
+    taskLinkErrorShown = false;
+
+    const redirectedUrl = new URL(window.location.href);
+    redirectedUrl.hash = new URLSearchParams({
+      team: current.teamId,
+      session: current.sessionId,
+      issue: current.issueId
+    }).toString();
+
+    window.history.replaceState(null, "", redirectedUrl.hash);
+    applyPendingTaskLink();
+
+    toast(
+      "Задача была перенесена. Открыта её текущая сессия.",
+      "success",
+      4000
+    );
+
+    return true;
+  } catch (error) {
+    handleError(error);
+    return false;
+  } finally {
+    resolvingMovedLink = false;
+  }
 }
 
 function applyPendingTaskLink() {
@@ -1322,8 +1398,14 @@ function startSessionsListener() {
         !state.sessions.some(session => session.id === pendingTaskLink.sessionId) &&
         !snapshot.metadata.fromCache
       ) {
-        showTaskLinkError("Сессия из ссылки не найдена или была удалена.");
-        pendingTaskLink = null;
+        const unresolvedLink = { ...pendingTaskLink };
+
+        resolveMovedIssueLink(unresolvedLink).then(resolved => {
+          if (!resolved && pendingTaskLink) {
+            showTaskLinkError("Сессия из ссылки не найдена или была удалена.");
+            pendingTaskLink = null;
+          }
+        });
       } else {
         applyPendingTaskLink();
       }
@@ -1580,7 +1662,9 @@ function issueAuditActionText(action) {
   return ({
     created: "добавил задачу",
     edited: "отредактировал задачу",
-    deleted: "удалил задачу"
+    deleted: "удалил задачу",
+    moved_out: "перенёс задачу в другую сессию",
+    moved_in: "перенёс задачу в эту сессию"
   })[action] || action;
 }
 
@@ -1588,7 +1672,9 @@ function issueAuditActionClass(action) {
   return ({
     created: "created",
     edited: "edited",
-    deleted: "deleted"
+    deleted: "deleted",
+    moved_out: "moved",
+    moved_in: "moved"
   })[action] || "";
 }
 
@@ -1600,7 +1686,11 @@ function syntheticCreationEvents() {
   );
 
   return state.issues
-    .filter(issue => !auditedIssueIds.has(issue.id))
+    .filter(
+      issue =>
+        !auditedIssueIds.has(issue.id) &&
+        !issue.movedFromSessionId
+    )
     .map(issue => ({
       id: `legacy-created-${issue.id}`,
       action: "created",
@@ -1649,6 +1739,12 @@ function renderIssueAudit() {
       ? event.changedFields
       : [];
 
+    const moveDetails = event.action === "moved_out"
+      ? `В сессию: ${event.targetSessionName || event.targetSessionId || "—"}`
+      : event.action === "moved_in"
+        ? `Из сессии: ${event.sourceSessionName || event.sourceSessionId || "—"}`
+        : "";
+
     return `
       <div class="issue-audit-entry">
         <div class="issue-audit-marker ${issueAuditActionClass(event.action)}"></div>
@@ -1668,6 +1764,16 @@ function renderIssueAudit() {
               ? `
                   <div class="issue-audit-fields">
                     Изменено: ${fields.map(escapeHtml).join(", ")}
+                  </div>
+                `
+              : ""
+          }
+
+          ${
+            moveDetails
+              ? `
+                  <div class="issue-audit-fields">
+                    ${escapeHtml(moveDetails)}
                   </div>
                 `
               : ""
@@ -1747,6 +1853,7 @@ function startIssuesListener() {
     snapshot => {
       state.issues = snapshot.docs
         .map(issueDoc => ({ id: issueDoc.id, ...issueDoc.data() }))
+        .filter(issue => issue.moveState !== "copying")
         .sort((a, b) => {
           const sortDiff = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
           return sortDiff || timestampValue(a.createdAt) - timestampValue(b.createdAt);
@@ -1802,8 +1909,14 @@ function startIssuesListener() {
         !state.issues.some(issue => issue.id === pendingTaskLink.issueId) &&
         !snapshot.metadata.fromCache
       ) {
-        showTaskLinkError("Задача из ссылки не найдена или была удалена.");
-        pendingTaskLink = null;
+        const unresolvedLink = { ...pendingTaskLink };
+
+        resolveMovedIssueLink(unresolvedLink).then(resolved => {
+          if (!resolved && pendingTaskLink) {
+            showTaskLinkError("Задача из ссылки не найдена или была удалена.");
+            pendingTaskLink = null;
+          }
+        });
       } else {
         applyPendingTaskLink();
       }
@@ -2518,6 +2631,16 @@ function renderLeadIssueActions() {
 
   buttons.push('<button class="button secondary" type="button" data-issue-action="edit">Редактировать</button>');
 
+  if (state.issue.status === "voting") {
+    buttons.push(
+      '<button class="button secondary" type="button" disabled title="Сначала раскройте оценки или завершите раунд">Перенести</button>'
+    );
+  } else {
+    buttons.push(
+      '<button class="button secondary" type="button" data-issue-action="move">Перенести</button>'
+    );
+  }
+
   if (state.issue.status === "pending") {
     buttons.push('<button class="button primary" type="button" data-issue-action="start">Начать голосование</button>');
   }
@@ -2557,6 +2680,11 @@ async function issueAction(action) {
 
   if (action === "edit") {
     openEditIssueDialog();
+    return;
+  }
+
+  if (action === "move") {
+    openMoveIssueDialog();
     return;
   }
 
@@ -2639,6 +2767,429 @@ async function issueAction(action) {
   } catch (error) {
     handleError(error);
   }
+}
+
+function openMoveIssueDialog() {
+  if (!isLead() || !state.issue) return;
+
+  const targetSessions = state.sessions.filter(
+    session => session.id !== state.sessionId
+  );
+
+  $("moveIssueTitle").textContent = state.issue.title || "";
+  $("moveIssueSourceSession").textContent =
+    currentSession()?.name || state.sessionId || "";
+
+  $("moveIssueTargetSession").innerHTML = targetSessions.length
+    ? targetSessions.map(session => `
+        <option value="${escapeHtml(session.id)}">
+          ${escapeHtml(session.name)}
+          ${session.iteration ? ` — ${escapeHtml(session.iteration)}` : ""}
+          ${session.status === "finished" ? " (завершена)" : ""}
+        </option>
+      `).join("")
+    : '<option value="">Нет другой сессии в этой команде</option>';
+
+  $("moveIssueTargetSession").disabled = targetSessions.length === 0;
+  $("confirmMoveIssueBtn").disabled = targetSessions.length === 0;
+
+  setFormMessage(
+    $("moveIssueMessage"),
+    targetSessions.length
+      ? "Будут перенесены задача, все голоса, статусы голосования, история раундов и итоговая оценка. Исходная задача удалится только после проверки копии."
+      : "Сначала создайте ещё одну сессию в этой команде.",
+    targetSessions.length ? "info" : "error"
+  );
+
+  openDialog("moveIssueDialog");
+}
+
+async function readCollectionDocuments(collectionRef) {
+  const snapshot = await getDocs(collectionRef);
+
+  return snapshot.docs.map(item => ({
+    id: item.id,
+    data: item.data()
+  }));
+}
+
+async function writeDocumentsInChunks(collectionRef, documents) {
+  const chunkSize = 350;
+
+  for (let start = 0; start < documents.length; start += chunkSize) {
+    const batch = writeBatch(db);
+
+    documents.slice(start, start + chunkSize).forEach(item => {
+      batch.set(
+        doc(collectionRef, item.id),
+        item.data
+      );
+    });
+
+    await batch.commit();
+  }
+}
+
+async function removeIncompleteMovedCopy(sessionId, issueId) {
+  const issueRef = doc(
+    db,
+    "teams", state.teamId,
+    "sessions", sessionId,
+    "issues", issueId
+  );
+
+  try {
+    await deleteCollectionRefs(collection(issueRef, "votes"));
+    await deleteCollectionRefs(collection(issueRef, "vote_status"));
+    await deleteCollectionRefs(collection(issueRef, "rounds"));
+    await deleteDoc(issueRef);
+  } catch (error) {
+    console.warn("Не удалось полностью очистить незавершённую копию", error);
+  }
+}
+
+async function verifyMovedCollections(targetIssueRef, expected) {
+  const [votes, statuses, rounds] = await Promise.all([
+    getDocs(collection(targetIssueRef, "votes")),
+    getDocs(collection(targetIssueRef, "vote_status")),
+    getDocs(collection(targetIssueRef, "rounds"))
+  ]);
+
+  if (
+    votes.size !== expected.votes ||
+    statuses.size !== expected.statuses ||
+    rounds.size !== expected.rounds
+  ) {
+    throw new Error(
+      "Проверка переноса не пройдена: количество вложенных документов не совпало."
+    );
+  }
+}
+
+async function moveIssueToSession() {
+  if (!isLead() || !state.issue) return;
+
+  const targetSessionId = $("moveIssueTargetSession").value;
+  const messageTarget = $("moveIssueMessage");
+
+  if (!targetSessionId || targetSessionId === state.sessionId) {
+    setFormMessage(messageTarget, "Выберите другую сессию.");
+    return;
+  }
+
+  const targetSession = state.sessions.find(
+    session => session.id === targetSessionId
+  );
+
+  if (!targetSession) {
+    setFormMessage(messageTarget, "Выбранная сессия не найдена.");
+    return;
+  }
+
+  if (state.issue.status === "voting") {
+    setFormMessage(
+      messageTarget,
+      "Нельзя переносить задачу во время активного голосования. Сначала раскройте оценки.",
+      "error"
+    );
+    return;
+  }
+
+  const sourceTeamId = state.teamId;
+  const sourceSessionId = state.sessionId;
+  const sourceSession = currentSession();
+  const issueId = state.issue.id;
+
+  const sourceIssueRef = doc(
+    db,
+    "teams", sourceTeamId,
+    "sessions", sourceSessionId,
+    "issues", issueId
+  );
+
+  const targetIssueRef = doc(
+    db,
+    "teams", sourceTeamId,
+    "sessions", targetSessionId,
+    "issues", issueId
+  );
+
+  await withButton(
+    $("confirmMoveIssueBtn"),
+    "Перенос...",
+    async () => {
+      let targetCreated = false;
+
+      try {
+        setFormMessage(
+          messageTarget,
+          "Читаем задачу и всю историю. Исходная задача пока остаётся без изменений.",
+          "info"
+        );
+
+        const sourceSnapshot = await getDoc(sourceIssueRef);
+
+        if (!sourceSnapshot.exists()) {
+          throw new Error("Исходная задача больше не существует.");
+        }
+
+        const sourceData = sourceSnapshot.data();
+
+        if (sourceData.status === "voting") {
+          throw new Error(
+            "Задача перешла в режим голосования. Сначала раскройте оценки."
+          );
+        }
+
+        const existingTarget = await getDoc(targetIssueRef);
+
+        if (existingTarget.exists()) {
+          const existingData = existingTarget.data();
+
+          if (
+            existingData.moveState === "copying" &&
+            existingData.movedFromSessionId === sourceSessionId
+          ) {
+            await removeIncompleteMovedCopy(targetSessionId, issueId);
+          } else {
+            throw new Error(
+              "В целевой сессии уже существует задача с таким идентификатором."
+            );
+          }
+        }
+
+        const sourceVotesRef = collection(sourceIssueRef, "votes");
+        const sourceStatusesRef = collection(sourceIssueRef, "vote_status");
+        const sourceRoundsRef = collection(sourceIssueRef, "rounds");
+
+        const [votes, statuses, rounds, targetIssuesSnapshot] =
+          await Promise.all([
+            readCollectionDocuments(sourceVotesRef),
+            readCollectionDocuments(sourceStatusesRef),
+            readCollectionDocuments(sourceRoundsRef),
+            getDocs(
+              collection(
+                db,
+                "teams", sourceTeamId,
+                "sessions", targetSessionId,
+                "issues"
+              )
+            )
+          ]);
+
+        const targetSortOrder = targetIssuesSnapshot.docs.reduce(
+          (maximum, item) =>
+            Math.max(
+              maximum,
+              Number(item.data().sortOrder || 0)
+            ),
+          0
+        ) + 10;
+
+        const actor = currentActorSnapshot();
+
+        setFormMessage(
+          messageTarget,
+          "Создаём проверяемую копию в новой сессии. Исходная задача всё ещё остаётся на месте.",
+          "info"
+        );
+
+        await setDoc(targetIssueRef, {
+          ...sourceData,
+          sortOrder: targetSortOrder,
+          moveState: "copying",
+          movedFromSessionId: sourceSessionId,
+          movedFromSessionName: sourceSession?.name || "",
+          movedByUid: actor.uid,
+          movedByEmail: actor.email,
+          movedByDisplayName: actor.displayName,
+          moveStartedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+
+        targetCreated = true;
+
+        await writeDocumentsInChunks(
+          collection(targetIssueRef, "votes"),
+          votes
+        );
+        await writeDocumentsInChunks(
+          collection(targetIssueRef, "vote_status"),
+          statuses
+        );
+        await writeDocumentsInChunks(
+          collection(targetIssueRef, "rounds"),
+          rounds
+        );
+
+        setFormMessage(
+          messageTarget,
+          "Проверяем, что задача, голоса и история полностью скопированы.",
+          "info"
+        );
+
+        await verifyMovedCollections(targetIssueRef, {
+          votes: votes.length,
+          statuses: statuses.length,
+          rounds: rounds.length
+        });
+
+        // Проверяем, что исходную задачу не изменили во время копирования.
+        const sourceBeforeFinal = await getDoc(sourceIssueRef);
+
+        if (!sourceBeforeFinal.exists()) {
+          throw new Error(
+            "Исходная задача была удалена во время переноса."
+          );
+        }
+
+        const currentSourceData = sourceBeforeFinal.data();
+
+        if (
+          currentSourceData.status !== sourceData.status ||
+          Number(currentSourceData.currentRound) !== Number(sourceData.currentRound) ||
+          timestampValue(currentSourceData.updatedAt) !==
+            timestampValue(sourceData.updatedAt)
+        ) {
+          throw new Error(
+            "Задача изменилась во время переноса. Исходная задача сохранена; повторите перенос."
+          );
+        }
+
+        setFormMessage(
+          messageTarget,
+          "Копия проверена. Завершаем перенос и сохраняем старую ссылку.",
+          "info"
+        );
+
+        const redirectRef = issueRedirectRef(
+          sourceTeamId,
+          sourceSessionId,
+          issueId
+        );
+
+        const sourceAuditRef = createIssueAuditRef(
+          sourceTeamId,
+          sourceSessionId
+        );
+
+        const targetAuditRef = createIssueAuditRef(
+          sourceTeamId,
+          targetSessionId
+        );
+
+        const finalBatch = writeBatch(db);
+
+        finalBatch.update(targetIssueRef, {
+          moveState: "complete",
+          movedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+
+        finalBatch.set(redirectRef, {
+          sourceSessionId,
+          sourceIssueId: issueId,
+          targetSessionId,
+          targetIssueId: issueId,
+          movedByUid: actor.uid,
+          movedByEmail: actor.email,
+          movedByDisplayName: actor.displayName,
+          movedAt: serverTimestamp()
+        });
+
+        finalBatch.set(
+          sourceAuditRef,
+          {
+            ...buildIssueAuditEvent({
+              action: "moved_out",
+              issueId,
+              issueTitle: sourceData.title || "Задача без названия",
+              snapshot: {
+                title: sourceData.title || "",
+                targetSessionId,
+                targetSessionName: targetSession.name || ""
+              }
+            }),
+            sourceSessionId,
+            sourceSessionName: sourceSession?.name || "",
+            targetSessionId,
+            targetSessionName: targetSession.name || ""
+          }
+        );
+
+        finalBatch.set(
+          targetAuditRef,
+          {
+            ...buildIssueAuditEvent({
+              action: "moved_in",
+              issueId,
+              issueTitle: sourceData.title || "Задача без названия",
+              snapshot: {
+                title: sourceData.title || "",
+                sourceSessionId,
+                sourceSessionName: sourceSession?.name || ""
+              }
+            }),
+            sourceSessionId,
+            sourceSessionName: sourceSession?.name || "",
+            targetSessionId,
+            targetSessionName: targetSession.name || ""
+          }
+        );
+
+        // Исходный документ удаляется только в одной атомарной операции
+        // после копирования и проверки всех вложенных коллекций.
+        finalBatch.delete(sourceIssueRef);
+
+        await finalBatch.commit();
+
+        // Вложенные документы старой задачи теперь являются только
+        // техническими остатками. Их удаление не влияет на новую копию.
+        try {
+          await deleteCollectionRefs(sourceVotesRef);
+          await deleteCollectionRefs(sourceStatusesRef);
+          await deleteCollectionRefs(sourceRoundsRef);
+        } catch (cleanupError) {
+          console.warn(
+            "Перенос завершён, но не все технические остатки удалены",
+            cleanupError
+          );
+        }
+
+        closeDialog("moveIssueDialog");
+
+        pendingTaskLink = {
+          teamId: sourceTeamId,
+          sessionId: targetSessionId,
+          issueId
+        };
+
+        const newUrl = new URL(window.location.href);
+        newUrl.hash = new URLSearchParams({
+          team: sourceTeamId,
+          session: targetSessionId,
+          issue: issueId
+        }).toString();
+
+        window.history.replaceState(null, "", newUrl.hash);
+        selectSession(targetSessionId);
+
+        toast(
+          `Задача перенесена в сессию «${targetSession.name}». Все данные сохранены.`,
+          "success",
+          6000
+        );
+      } catch (error) {
+        handleError(error, messageTarget);
+
+        // До финального commit исходная задача не удаляется.
+        // Незавершённую скрытую копию стараемся удалить.
+        if (targetCreated) {
+          await removeIncompleteMovedCopy(targetSessionId, issueId);
+        }
+      }
+    }
+  );
 }
 
 async function castVote(value) {
@@ -2919,6 +3470,10 @@ async function deleteTeam() {
 
     await deleteCollectionRefs(
       collection(db, "teams", state.teamId, "members")
+    );
+
+    await deleteCollectionRefs(
+      collection(db, "teams", state.teamId, "issue_redirects")
     );
 
     await deleteDoc(doc(db, "teams", state.teamId));

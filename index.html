@@ -410,6 +410,43 @@
   </form>
 </dialog>
 
+
+<dialog id="moveIssueDialog">
+  <form method="dialog" class="dialog-card" onsubmit="return false">
+    <div class="dialog-title-row">
+      <h2>Перенос задачи</h2>
+      <button class="button secondary icon-button" type="button" data-close-dialog="moveIssueDialog">×</button>
+    </div>
+
+    <div class="move-issue-summary">
+      <div>
+        <span>Задача</span>
+        <strong id="moveIssueTitle"></strong>
+      </div>
+      <div>
+        <span>Текущая сессия</span>
+        <strong id="moveIssueSourceSession"></strong>
+      </div>
+    </div>
+
+    <label for="moveIssueTargetSession">Перенести в сессию</label>
+    <select id="moveIssueTargetSession"></select>
+
+    <div class="message info">
+      Перенос выполняется только внутри текущей команды. Сохраняются задача,
+      авторы, голоса всех раундов, история раундов, итоговая оценка и аудит.
+      Старые прямые ссылки продолжат работать.
+    </div>
+
+    <div class="actions">
+      <button id="confirmMoveIssueBtn" class="button primary" type="button">Перенести</button>
+      <button class="button secondary" type="button" data-close-dialog="moveIssueDialog">Отмена</button>
+    </div>
+
+    <div id="moveIssueMessage" class="form-message"></div>
+  </form>
+</dialog>
+
 <dialog id="issueAuditDialog">
   <form method="dialog" class="dialog-card wide-dialog" onsubmit="return false">
     <div class="dialog-title-row">
