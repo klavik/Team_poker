@@ -348,6 +348,8 @@ function bindEvents() {
 
   $("openTeamDialogBtn").addEventListener("click", () => openDialog("teamDialog"));
   $("createTeamBtn").addEventListener("click", createTeam);
+  $("editTeamBtn").addEventListener("click", openEditTeamDialog);
+  $("saveTeamChangesBtn").addEventListener("click", saveTeamChanges);
   $("deleteTeamBtn").addEventListener("click", deleteTeam);
   $("manageMembersBtn").addEventListener("click", openMembersDialog);
   $("addMemberBtn").addEventListener("click", addMember);
@@ -355,11 +357,14 @@ function bindEvents() {
 
   $("openSessionDialogBtn").addEventListener("click", () => openDialog("sessionDialog"));
   $("createSessionBtn").addEventListener("click", createSession);
+  $("editSessionBtn").addEventListener("click", openEditSessionDialog);
+  $("saveSessionChangesBtn").addEventListener("click", saveSessionChanges);
   $("finishSessionBtn").addEventListener("click", finishSession);
   $("deleteSessionBtn").addEventListener("click", deleteSession);
 
   $("openIssueDialogBtn").addEventListener("click", () => openDialog("issueDialog"));
   $("createIssueBtn").addEventListener("click", createIssue);
+  $("saveIssueChangesBtn").addEventListener("click", saveIssueChanges);
 
   $("finalizeBtn").addEventListener("click", finalizeEstimate);
   $("copyEstimateBtn").addEventListener("click", copyEstimate);
@@ -882,10 +887,12 @@ function renderTeamControls() {
     : "Команда не выбрана.";
 
   $("openSessionDialogBtn").disabled = !lead || !state.teamId;
+  $("editTeamBtn").disabled = !lead || !state.teamId;
   $("deleteTeamBtn").disabled = !lead || !state.teamId;
   $("manageMembersBtn").disabled = !state.teamId;
 
   $("openIssueDialogBtn").disabled = !lead || !state.sessionId;
+  $("editSessionBtn").disabled = !lead || !state.sessionId;
   $("finishSessionBtn").disabled = !lead || !state.sessionId;
   $("deleteSessionBtn").disabled = !lead || !state.sessionId;
 }
@@ -921,6 +928,56 @@ async function createTeam() {
       closeDialog("teamDialog");
       localStorage.setItem("planningPoker.firebase.teamId", teamRef.id);
       toast(`Команда «${name}» создана.`, "success");
+    } catch (error) {
+      handleError(error, target);
+    }
+  });
+}
+
+function openEditTeamDialog() {
+  if (!isLead() || !state.teamId) return;
+
+  const team = currentTeam();
+  if (!team) return;
+
+  $("editTeamName").value = team.name || "";
+  setFormMessage($("editTeamMessage"));
+  openDialog("editTeamDialog");
+
+  setTimeout(() => {
+    $("editTeamName").focus();
+    $("editTeamName").select();
+  }, 0);
+}
+
+async function saveTeamChanges() {
+  if (!isLead() || !state.teamId) return;
+
+  const name = $("editTeamName").value.trim();
+  const target = $("editTeamMessage");
+
+  setFormMessage(target);
+
+  if (!name) {
+    return setFormMessage(target, "Укажите название команды.");
+  }
+
+  if (name.length > 100) {
+    return setFormMessage(target, "Название команды должно быть не длиннее 100 символов.");
+  }
+
+  await withButton($("saveTeamChangesBtn"), "Сохранение...", async () => {
+    try {
+      await updateDoc(
+        doc(db, "teams", state.teamId),
+        {
+          name,
+          updatedAt: serverTimestamp()
+        }
+      );
+
+      closeDialog("editTeamDialog");
+      toast("Команда обновлена.", "success", 2500);
     } catch (error) {
       handleError(error, target);
     }
@@ -1344,6 +1401,59 @@ async function createSession() {
   });
 }
 
+function openEditSessionDialog() {
+  if (!isLead() || !state.sessionId) return;
+
+  const session = currentSession();
+  if (!session) return;
+
+  $("editSessionName").value = session.name || "";
+  $("editSessionIteration").value = session.iteration || "";
+  setFormMessage($("editSessionMessage"));
+  openDialog("editSessionDialog");
+
+  setTimeout(() => {
+    $("editSessionName").focus();
+    $("editSessionName").select();
+  }, 0);
+}
+
+async function saveSessionChanges() {
+  if (!isLead() || !state.sessionId) return;
+
+  const name = $("editSessionName").value.trim();
+  const iteration = $("editSessionIteration").value.trim();
+  const target = $("editSessionMessage");
+
+  setFormMessage(target);
+
+  if (!name) {
+    return setFormMessage(target, "Укажите название сессии.");
+  }
+
+  if (name.length > 150) {
+    return setFormMessage(target, "Название сессии должно быть не длиннее 150 символов.");
+  }
+
+  await withButton($("saveSessionChangesBtn"), "Сохранение...", async () => {
+    try {
+      await updateDoc(
+        doc(db, "teams", state.teamId, "sessions", state.sessionId),
+        {
+          name,
+          iteration: iteration || null,
+          updatedAt: serverTimestamp()
+        }
+      );
+
+      closeDialog("editSessionDialog");
+      toast("Сессия обновлена.", "success", 2500);
+    } catch (error) {
+      handleError(error, target);
+    }
+  });
+}
+
 async function finishSession() {
   if (!isLead() || !state.sessionId) return;
 
@@ -1488,6 +1598,71 @@ function selectIssue(issueId, options = {}) {
   }
 }
 
+function isValidExternalUrl(value) {
+  if (!value) return true;
+
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function openEditIssueDialog() {
+  if (!isLead() || !state.issue) return;
+
+  $("editIssueTitle").value = state.issue.title || "";
+  $("editIssueUrl").value = state.issue.gitlabUrl || "";
+  $("editIssueDescription").value = state.issue.description || "";
+  setFormMessage($("editIssueMessage"));
+  openDialog("editIssueDialog");
+
+  setTimeout(() => {
+    $("editIssueTitle").focus();
+    $("editIssueTitle").select();
+  }, 0);
+}
+
+async function saveIssueChanges() {
+  if (!isLead() || !state.issue) return;
+
+  const title = $("editIssueTitle").value.trim();
+  const externalUrl = $("editIssueUrl").value.trim();
+  const description = $("editIssueDescription").value.trim();
+  const target = $("editIssueMessage");
+
+  setFormMessage(target);
+
+  if (!title) {
+    return setFormMessage(target, "Укажите название задачи.");
+  }
+
+  if (title.length > 300) {
+    return setFormMessage(target, "Название задачи должно быть не длиннее 300 символов.");
+  }
+
+  if (!isValidExternalUrl(externalUrl)) {
+    return setFormMessage(target, "Ссылка должна начинаться с http:// или https://.");
+  }
+
+  await withButton($("saveIssueChangesBtn"), "Сохранение...", async () => {
+    try {
+      await updateDoc(currentIssueRef(), {
+        title,
+        gitlabUrl: externalUrl || null,
+        description: description || null,
+        updatedAt: serverTimestamp()
+      });
+
+      closeDialog("editIssueDialog");
+      toast("Задача обновлена.", "success", 2500);
+    } catch (error) {
+      handleError(error, target);
+    }
+  });
+}
+
 async function createIssue() {
   if (!isLead()) return;
 
@@ -1498,6 +1673,9 @@ async function createIssue() {
 
   setFormMessage(target);
   if (!title) return setFormMessage(target, "Укажите название задачи.");
+  if (!isValidExternalUrl(gitlabUrl)) {
+    return setFormMessage(target, "Ссылка должна начинаться с http:// или https://.");
+  }
 
   const maxOrder = state.issues.reduce(
     (maximum, issue) => Math.max(maximum, Number(issue.sortOrder || 0)),
@@ -1963,6 +2141,8 @@ function renderLeadIssueActions() {
 
   const buttons = [];
 
+  buttons.push('<button class="button secondary" type="button" data-issue-action="edit">Редактировать</button>');
+
   if (state.issue.status === "pending") {
     buttons.push('<button class="button primary" type="button" data-issue-action="start">Начать голосование</button>');
   }
@@ -1999,6 +2179,11 @@ function currentIssueRef() {
 
 async function issueAction(action) {
   if (!isLead() || !state.issue) return;
+
+  if (action === "edit") {
+    openEditIssueDialog();
+    return;
+  }
 
   if (action === "delete") {
     const confirmed = confirm(
