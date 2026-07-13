@@ -607,3 +607,32 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
     gap: 5px;
   }
 }
+
+
+.move-issue-summary {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.move-issue-summary > div {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.move-issue-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.move-issue-summary strong {
+  display: block;
+  margin-top: 3px;
+}
+
+.issue-audit-marker.moved {
+  background: var(--info);
+}
