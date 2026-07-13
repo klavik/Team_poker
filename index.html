@@ -156,7 +156,7 @@
                   <strong id="votesCount">—</strong>
                 </div>
                 <div class="metric">
-                  <span>Участников</span>
+                  <span>Голосующих</span>
                   <strong id="membersCount">—</strong>
                 </div>
               </div>
@@ -329,9 +329,16 @@
 
       <label for="memberRole">Роль</label>
       <select id="memberRole">
-        <option value="member">Участник</option>
-        <option value="lead">Тимлид</option>
+        <option value="member">Участник — голосует</option>
+        <option value="lead">Тимлид — управляет оценкой и голосует</option>
+        <option value="initiator">Инициатор — добавляет задачи, не голосует</option>
+        <option value="admin">Администратор — управляет всем, не голосует</option>
       </select>
+
+      <div class="message info role-help">
+        Владелец команды всегда считается администратором.
+        Администраторы и инициаторы не учитываются среди голосующих.
+      </div>
 
       <div class="actions">
         <button id="addMemberBtn" class="button primary" type="button">Добавить</button>

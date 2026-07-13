@@ -203,16 +203,118 @@ function renderDevelopmentAreaBadges() {
   }
 }
 
-function isLead() {
+const TEAM_ROLES = Object.freeze({
+  admin: "Администратор",
+  lead: "Тимлид",
+  initiator: "Инициатор",
+  member: "Участник"
+});
+
+function isValidTeamRole(value) {
+  return Object.prototype.hasOwnProperty.call(
+    TEAM_ROLES,
+    String(value || "")
+  );
+}
+
+function roleLabel(value) {
+  return isValidTeamRole(value)
+    ? TEAM_ROLES[value]
+    : "Нет активной роли";
+}
+
+function roleCssClass(value) {
+  return isValidTeamRole(value)
+    ? `role-${value}`
+    : "role-unknown";
+}
+
+function effectiveMemberRole(member) {
+  const team = currentTeam();
+  const memberEmail = normalizeEmail(member?.email);
+
+  // Владелец старой команды автоматически становится администратором.
+  // Документ участника и все существующие данные менять не требуется.
+  if (
+    team &&
+    memberEmail &&
+    memberEmail === normalizeEmail(team.ownerEmail)
+  ) {
+    return "admin";
+  }
+
+  return isValidTeamRole(member?.role)
+    ? member.role
+    : null;
+}
+
+function currentRole() {
   const email = normalizeEmail(currentUser?.email);
   const team = currentTeam();
 
+  if (!team || !email) return null;
+
+  if (email === normalizeEmail(team.ownerEmail)) {
+    return "admin";
+  }
+
+  const member = state.members.find(
+    item => normalizeEmail(item.email) === email
+  );
+
+  return effectiveMemberRole(member);
+}
+
+function isAdmin() {
+  return currentRole() === "admin";
+}
+
+function isTeamLeadRole() {
+  return currentRole() === "lead";
+}
+
+function canManageEstimation() {
+  return ["admin", "lead"].includes(currentRole());
+}
+
+function canVote() {
+  return ["lead", "member"].includes(currentRole());
+}
+
+function canCreateIssue() {
+  return ["admin", "lead", "initiator"].includes(currentRole());
+}
+
+function ownsIssue(issue = state.issue) {
+  if (!issue || !currentUser) return false;
+
+  return issue.createdByUid === currentUser.uid
+    || normalizeEmail(issue.createdByEmail)
+      === normalizeEmail(currentUser.email);
+}
+
+function canEditIssue(issue = state.issue) {
   return Boolean(
-    team &&
+    issue &&
     (
-      email === team.ownerEmail ||
-      (Array.isArray(team.leadEmails) && team.leadEmails.includes(email))
+      canManageEstimation()
+      || (currentRole() === "initiator" && ownsIssue(issue))
     )
+  );
+}
+
+function canDeleteIssue(issue = state.issue) {
+  if (!issue) return false;
+  if (canManageEstimation()) return true;
+
+  return currentRole() === "initiator"
+    && ownsIssue(issue)
+    && issue.status === "pending";
+}
+
+function votingMembers() {
+  return state.members.filter(member =>
+    ["lead", "member"].includes(effectiveMemberRole(member))
   );
 }
 
@@ -627,7 +729,7 @@ function renderAvailableUsers() {
     select.value = "";
   }
 
-  $("addMemberBtn").disabled = availableUsers.length === 0 || !isLead();
+  $("addMemberBtn").disabled = availableUsers.length === 0 || !isAdmin();
 
   if (status) {
     status.textContent = availableUsers.length
@@ -1047,6 +1149,7 @@ function startMembersListener() {
 
       renderMembers();
       renderAvailableUsers();
+      show($("memberEditor"), isAdmin());
       renderTeamControls();
       renderIssue();
     },
@@ -1055,22 +1158,38 @@ function startMembersListener() {
 }
 
 function renderTeamControls() {
-  const lead = isLead();
+  const role = currentRole();
+  const admin = isAdmin();
+  const estimationManager = canManageEstimation();
+
   renderDevelopmentAreaBadges();
 
   $("teamRole").textContent = state.teamId
-    ? `Ваша роль: ${lead ? "тимлид" : state.role === "member" ? "участник" : "нет активного членства"}`
+    ? `Ваша роль: ${roleLabel(role).toLowerCase()}`
     : "Команда не выбрана.";
 
-  $("openSessionDialogBtn").disabled = !lead || !state.teamId;
-  $("editTeamBtn").disabled = !lead || !state.teamId;
-  $("deleteTeamBtn").disabled = !lead || !state.teamId;
+  $("openSessionDialogBtn").disabled =
+    !estimationManager || !state.teamId;
+
+  $("editTeamBtn").disabled =
+    !admin || !state.teamId;
+
+  $("deleteTeamBtn").disabled =
+    !admin || !state.teamId;
+
   $("manageMembersBtn").disabled = !state.teamId;
 
-  $("openIssueDialogBtn").disabled = !lead || !state.sessionId;
-  $("editSessionBtn").disabled = !lead || !state.sessionId;
-  $("finishSessionBtn").disabled = !lead || !state.sessionId;
-  $("deleteSessionBtn").disabled = !lead || !state.sessionId;
+  $("openIssueDialogBtn").disabled =
+    !canCreateIssue() || !state.sessionId;
+
+  $("editSessionBtn").disabled =
+    !estimationManager || !state.sessionId;
+
+  $("finishSessionBtn").disabled =
+    !estimationManager || !state.sessionId;
+
+  $("deleteSessionBtn").disabled =
+    !estimationManager || !state.sessionId;
 }
 
 async function createTeam() {
@@ -1103,9 +1222,10 @@ async function createTeam() {
       });
 
       await setDoc(doc(db, "teams", teamRef.id, "members", email), {
+        uid: currentUser.uid,
         email,
         displayName: currentUser.displayName || email,
-        role: "lead",
+        role: "admin",
         active: true,
         createdAt: serverTimestamp()
       });
@@ -1122,7 +1242,7 @@ async function createTeam() {
 }
 
 function openEditTeamDialog() {
-  if (!isLead() || !state.teamId) return;
+  if (!isAdmin() || !state.teamId) return;
 
   const team = currentTeam();
   if (!team) return;
@@ -1142,7 +1262,7 @@ function openEditTeamDialog() {
 }
 
 async function saveTeamChanges() {
-  if (!isLead() || !state.teamId) return;
+  if (!isAdmin() || !state.teamId) return;
 
   const name = $("editTeamName").value.trim();
   const developmentArea = $("editTeamDevelopmentArea").value;
@@ -1193,13 +1313,15 @@ function openMembersDialog() {
 
   renderMembers();
   renderAvailableUsers();
-  show($("memberEditor"), isLead());
+  show($("memberEditor"), isAdmin());
   openDialog("membersDialog");
 }
 
 function renderMembers() {
   const root = $("membersList");
   const currentEmail = normalizeEmail(currentUser?.email);
+  const ownerEmail = normalizeEmail(currentTeam()?.ownerEmail);
+  const admin = isAdmin();
 
   if (!state.members.length) {
     root.innerHTML = '<div class="empty-state">Участников нет.</div>';
@@ -1208,8 +1330,16 @@ function renderMembers() {
 
   root.innerHTML = state.members.map(member => {
     const memberEmail = normalizeEmail(member.email);
-    const canEditName = isLead() || memberEmail === currentEmail;
-    const canRemove = isLead() && memberEmail !== currentEmail;
+    const effectiveRole = effectiveMemberRole(member);
+    const isOwner = memberEmail === ownerEmail;
+
+    const canEditName = admin || memberEmail === currentEmail;
+    const canChangeRole = admin && !isOwner;
+    const canRemove =
+      admin &&
+      !isOwner &&
+      memberEmail !== currentEmail;
+
     const editing = editingMemberEmail === memberEmail;
 
     const nameBlock = editing
@@ -1229,6 +1359,34 @@ function renderMembers() {
           <div>
             <strong>${escapeHtml(member.displayName || member.email)}</strong>
             <div class="member-email">${escapeHtml(member.email)}</div>
+            ${
+              isOwner
+                ? '<div class="member-owner-note">Владелец команды</div>'
+                : ""
+            }
+          </div>
+        `;
+
+    const roleBlock = canChangeRole
+      ? `
+          <select
+            class="member-role-select"
+            data-member-role="${escapeHtml(memberEmail)}"
+            aria-label="Роль участника"
+          >
+            ${Object.entries(TEAM_ROLES).map(([value, label]) => `
+              <option
+                value="${escapeHtml(value)}"
+                ${effectiveRole === value ? "selected" : ""}
+              >
+                ${escapeHtml(label)}
+              </option>
+            `).join("")}
+          </select>
+        `
+      : `
+          <div class="role-pill ${roleCssClass(effectiveRole)}">
+            ${escapeHtml(roleLabel(effectiveRole))}
           </div>
         `;
 
@@ -1281,9 +1439,7 @@ function renderMembers() {
     return `
       <div class="member-row ${editing ? "editing" : ""}">
         ${nameBlock}
-        <div class="role-pill ${member.role === "lead" ? "lead" : ""}">
-          ${member.role === "lead" ? "Тимлид" : "Участник"}
-        </div>
+        ${roleBlock}
         ${actions}
       </div>
     `;
@@ -1330,8 +1486,20 @@ function renderMembers() {
     });
   });
 
+  root.querySelectorAll("[data-member-role]").forEach(select => {
+    select.addEventListener("change", () => {
+      changeMemberRole(
+        select.dataset.memberRole,
+        select.value
+      );
+    });
+  });
+
   root.querySelectorAll("[data-remove-member]").forEach(button => {
-    button.addEventListener("click", () => removeMember(button.dataset.removeMember));
+    button.addEventListener(
+      "click",
+      () => removeMember(button.dataset.removeMember)
+    );
   });
 }
 
@@ -1346,7 +1514,7 @@ async function saveMemberDisplayName(email) {
 
   const displayName = input?.value.trim() || "";
   const currentEmail = normalizeEmail(currentUser?.email);
-  const canEditName = isLead() || memberEmail === currentEmail;
+  const canEditName = isAdmin() || memberEmail === currentEmail;
 
   if (!member || !canEditName) {
     toast("Недостаточно прав для изменения имени.");
@@ -1381,8 +1549,74 @@ async function saveMemberDisplayName(email) {
   }
 }
 
+async function changeMemberRole(email, nextRole) {
+  if (!isAdmin() || !state.teamId) return;
+
+  const memberEmail = normalizeEmail(email);
+  const ownerEmail = normalizeEmail(currentTeam()?.ownerEmail);
+  const member = state.members.find(
+    item => normalizeEmail(item.email) === memberEmail
+  );
+
+  if (!member) {
+    toast("Участник не найден.");
+    return;
+  }
+
+  if (memberEmail === ownerEmail) {
+    toast("Роль владельца команды всегда «Администратор».");
+    renderMembers();
+    return;
+  }
+
+  if (!isValidTeamRole(nextRole)) {
+    toast("Выбрана неизвестная роль.");
+    renderMembers();
+    return;
+  }
+
+  const previousRole = effectiveMemberRole(member);
+  if (previousRole === nextRole) return;
+
+  try {
+    const teamRef = doc(db, "teams", state.teamId);
+    const memberRef = doc(
+      db,
+      "teams", state.teamId,
+      "members", memberEmail
+    );
+    const batch = writeBatch(db);
+
+    batch.update(memberRef, {
+      role: nextRole,
+      roleUpdatedByUid: currentUser.uid,
+      roleUpdatedByEmail: normalizeEmail(currentUser.email),
+      roleUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    batch.update(teamRef, {
+      ...(nextRole === "lead"
+        ? { leadEmails: arrayUnion(memberEmail) }
+        : { leadEmails: arrayRemove(memberEmail) }),
+      updatedAt: serverTimestamp()
+    });
+
+    await batch.commit();
+
+    toast(
+      `Роль изменена: ${roleLabel(nextRole)}.`,
+      "success",
+      2500
+    );
+  } catch (error) {
+    handleError(error);
+    renderMembers();
+  }
+}
+
 async function addMember() {
-  if (!isLead()) return;
+  if (!isAdmin()) return;
 
   const selectedUid = $("memberUserSelect").value;
   const selectedUser = state.directoryUsers.find(
@@ -1394,6 +1628,10 @@ async function addMember() {
   const target = $("memberDialogMessage");
 
   setFormMessage(target);
+
+  if (!isValidTeamRole(role)) {
+    return setFormMessage(target, "Выберите корректную роль.");
+  }
 
   if (!selectedUser) {
     return setFormMessage(
@@ -1408,7 +1646,7 @@ async function addMember() {
   await withButton($("addMemberBtn"), "Добавление...", async () => {
     try {
       const teamRef = doc(db, "teams", state.teamId);
-      const memberRef = doc(db, "teams", state.teamId, "members", email);
+      const memberRef = doc(db, "teams", state.teamId, "members", memberEmail);
       const batch = writeBatch(db);
 
       batch.set(memberRef, {
@@ -1441,10 +1679,23 @@ async function addMember() {
 }
 
 async function removeMember(email) {
-  if (!isLead()) return;
+  if (!isAdmin()) return;
 
-  const member = state.members.find(item => item.email === email);
-  if (!member || !confirm(`Удалить ${member.displayName} из команды?`)) return;
+  const memberEmail = normalizeEmail(email);
+  const member = state.members.find(
+    item => normalizeEmail(item.email) === memberEmail
+  );
+
+  if (!member) return;
+
+  if (
+    memberEmail === normalizeEmail(currentTeam()?.ownerEmail)
+  ) {
+    toast("Владельца команды нельзя удалить.");
+    return;
+  }
+
+  if (!confirm(`Удалить ${member.displayName} из команды?`)) return;
 
   try {
     const teamRef = doc(db, "teams", state.teamId);
@@ -1453,8 +1704,8 @@ async function removeMember(email) {
 
     batch.delete(memberRef);
     batch.update(teamRef, {
-      memberEmails: arrayRemove(email),
-      leadEmails: arrayRemove(email)
+      memberEmails: arrayRemove(memberEmail),
+      leadEmails: arrayRemove(memberEmail)
     });
 
     await batch.commit();
@@ -1578,7 +1829,7 @@ function selectSession(sessionId) {
 }
 
 async function createSession() {
-  if (!isLead()) return;
+  if (!canManageEstimation()) return;
 
   const name = $("sessionName").value.trim();
   const iteration = $("sessionIteration").value.trim();
@@ -1625,7 +1876,7 @@ async function createSession() {
 }
 
 function openEditSessionDialog() {
-  if (!isLead() || !state.sessionId) return;
+  if (!canManageEstimation() || !state.sessionId) return;
 
   const session = currentSession();
   if (!session) return;
@@ -1642,7 +1893,7 @@ function openEditSessionDialog() {
 }
 
 async function saveSessionChanges() {
-  if (!isLead() || !state.sessionId) return;
+  if (!canManageEstimation() || !state.sessionId) return;
 
   const name = $("editSessionName").value.trim();
   const iteration = $("editSessionIteration").value.trim();
@@ -1678,7 +1929,7 @@ async function saveSessionChanges() {
 }
 
 async function finishSession() {
-  if (!isLead() || !state.sessionId) return;
+  if (!canManageEstimation() || !state.sessionId) return;
 
   try {
     await updateDoc(
@@ -2119,7 +2370,7 @@ function isValidExternalUrl(value) {
 }
 
 function openEditIssueDialog() {
-  if (!isLead() || !state.issue) return;
+  if (!canEditIssue()) return;
 
   $("editIssueTitle").value = state.issue.title || "";
   $("editIssueUrl").value = state.issue.gitlabUrl || "";
@@ -2134,7 +2385,7 @@ function openEditIssueDialog() {
 }
 
 async function saveIssueChanges() {
-  if (!isLead() || !state.issue) return;
+  if (!canEditIssue()) return;
 
   const title = $("editIssueTitle").value.trim();
   const externalUrl = $("editIssueUrl").value.trim();
@@ -2196,19 +2447,6 @@ async function saveIssueChanges() {
         updatedAt: serverTimestamp()
       });
 
-      if (!isValidDevelopmentArea(session?.developmentArea)) {
-        batch.update(
-          doc(db, "teams", state.teamId, "sessions", state.sessionId),
-          {
-            developmentArea: estimatedRole,
-            estimatedTeamId: teamSnapshot.id,
-            estimatedTeamName: teamSnapshot.name,
-            developmentAreaCapturedAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          }
-        );
-      }
-
       batch.set(
         auditRef,
         buildIssueAuditEvent({
@@ -2232,7 +2470,7 @@ async function saveIssueChanges() {
 }
 
 async function createIssue() {
-  if (!isLead()) return;
+  if (!canCreateIssue()) return;
 
   const title = $("newIssueTitle").value.trim();
   const gitlabUrl = $("newIssueUrl").value.trim();
@@ -2294,6 +2532,19 @@ async function createIssue() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
+
+      if (!isValidDevelopmentArea(session?.developmentArea)) {
+        batch.update(
+          doc(db, "teams", state.teamId, "sessions", state.sessionId),
+          {
+            developmentArea: estimatedRole,
+            estimatedTeamId: teamSnapshot.id,
+            estimatedTeamName: teamSnapshot.name,
+            developmentAreaCapturedAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          }
+        );
+      }
 
       batch.set(
         auditRef,
@@ -2780,7 +3031,7 @@ function renderIssue() {
       ? "orange"
       : "";
 
-  const role = isValidDevelopmentArea(issue.estimatedRole)
+  const estimateDirection = isValidDevelopmentArea(issue.estimatedRole)
     ? issue.estimatedRole
     : finalizationEstimatedRole(issue);
 
@@ -2788,8 +3039,8 @@ function renderIssue() {
     <span class="status-pill ${statusClass}">
       ${escapeHtml(issueStatusText(issue.status))}
     </span>
-    <span class="area-badge compact ${developmentAreaClass(role)}">
-      ${escapeHtml(developmentAreaLabel(role))}
+    <span class="area-badge compact ${developmentAreaClass(estimateDirection)}">
+      ${escapeHtml(developmentAreaLabel(estimateDirection))}
     </span>
   `;
 
@@ -2800,30 +3051,55 @@ function renderIssue() {
   show($("gitlabLink"), Boolean(issue.gitlabUrl));
   if (issue.gitlabUrl) $("gitlabLink").href = issue.gitlabUrl;
 
+  const eligibleMembers = votingMembers();
+  const eligibleEmails = new Set(
+    eligibleMembers.map(member => normalizeEmail(member.email))
+  );
+  const eligibleVoteCount = state.voteStatuses.filter(status =>
+    eligibleEmails.has(normalizeEmail(status.voterEmail))
+  ).length;
+
   $("roundValue").textContent = issue.currentRound;
-  $("votesCount").textContent = state.voteStatuses.length;
-  $("membersCount").textContent = state.members.length;
+  $("votesCount").textContent = eligibleVoteCount;
+  $("membersCount").textContent = eligibleMembers.length;
+
+  const userRole = currentRole();
+  const userCanVote = canVote();
+  const canVoteNow = issue.status === "voting" && userCanVote;
+
+  const nonVotingNotice = userRole === "admin"
+    ? "Вы участвуете как администратор: можете управлять оценкой, но не голосуете."
+    : userRole === "initiator"
+      ? "Вы участвуете как инициатор: можете работать со своими задачами, но не голосуете."
+      : "У вашей роли нет права голосования.";
 
   $("voteNotice").textContent = ({
-    pending: "Тимлид ещё не открыл голосование.",
-    voting: "Выберите оценку. До раскрытия другие участники увидят только факт голосования.",
-    revealed: "Оценки раскрыты. Можно зафиксировать итог или начать новый раунд.",
+    pending: canManageEstimation()
+      ? "Голосование ещё не открыто."
+      : "Голосование ещё не открыто тимлидом или администратором.",
+    voting: userCanVote
+      ? "Выберите оценку. До раскрытия другие участники увидят только факт голосования."
+      : nonVotingNotice,
+    revealed: "Оценки раскрыты. Можно просмотреть результаты.",
     estimated: `Итоговая оценка: ${issue.finalEstimate} человеко-дней.`
   })[issue.status];
 
-  const canVote = issue.status === "voting" && Boolean(state.role || isLead());
-
   $("pokerCards").querySelectorAll("[data-vote-value]").forEach(button => {
     const value = Number(button.dataset.voteValue);
-    button.disabled = !canVote;
-    button.classList.toggle("active", Number(state.myVote?.value) === value);
+    button.disabled = !canVoteNow;
+    button.classList.toggle(
+      "active",
+      Number(state.myVote?.value) === value
+    );
   });
 
   $("myVoteMessage").textContent = state.myVote
-    ? `Ваш голос принят: ${state.myVote.value} ч.д.`
-    : canVote
+    ? `Ваш ранее сохранённый голос: ${state.myVote.value} ч.д.`
+    : canVoteNow
       ? "Вы ещё не проголосовали."
-      : "";
+      : issue.status === "voting" && !userCanVote
+        ? "Ваша роль не учитывается среди голосующих."
+        : "";
 
   renderLeadIssueActions();
   renderResults();
@@ -2836,8 +3112,10 @@ function renderIssue() {
   $("finalEstimate").value =
     issue.finalEstimate || suggestedEstimate() || "";
 
+  $("finalEstimate").disabled = !canManageEstimation();
+
   $("finalizeBtn").disabled =
-    !isLead() ||
+    !canManageEstimation() ||
     !canFinalizeStatus ||
     !isValidDevelopmentArea(estimatedRole);
 
@@ -2867,48 +3145,73 @@ function renderIssue() {
 
 function renderLeadIssueActions() {
   const root = $("leadIssueActions");
+  const issue = state.issue;
 
-  if (!isLead() || !state.issue) {
+  if (!issue) {
     root.innerHTML = "";
     return;
   }
 
+  const manager = canManageEstimation();
+  const editable = canEditIssue(issue);
+  const deletable = canDeleteIssue(issue);
   const buttons = [];
 
-  buttons.push('<button class="button secondary" type="button" data-issue-action="edit">Редактировать</button>');
-
-  if (state.issue.status === "voting") {
+  if (editable) {
     buttons.push(
-      '<button class="button secondary" type="button" disabled title="Сначала раскройте оценки или завершите раунд">Перенести</button>'
-    );
-  } else {
-    buttons.push(
-      '<button class="button secondary" type="button" data-issue-action="move">Перенести</button>'
+      '<button class="button secondary" type="button" data-issue-action="edit">Редактировать</button>'
     );
   }
 
-  if (state.issue.status === "pending") {
-    buttons.push('<button class="button primary" type="button" data-issue-action="start">Начать голосование</button>');
+  if (manager) {
+    if (issue.status === "voting") {
+      buttons.push(
+        '<button class="button secondary" type="button" disabled title="Сначала раскройте оценки или завершите раунд">Перенести</button>'
+      );
+    } else {
+      buttons.push(
+        '<button class="button secondary" type="button" data-issue-action="move">Перенести</button>'
+      );
+    }
+
+    if (issue.status === "pending") {
+      buttons.push(
+        '<button class="button primary" type="button" data-issue-action="start">Начать голосование</button>'
+      );
+    }
+
+    if (issue.status === "voting") {
+      buttons.push(
+        '<button class="button primary" type="button" data-issue-action="reveal">Раскрыть оценки</button>'
+      );
+    }
+
+    if (issue.status === "revealed") {
+      buttons.push(
+        '<button class="button secondary" type="button" data-issue-action="new-round">Новый раунд</button>'
+      );
+    }
+
+    if (issue.status === "estimated") {
+      buttons.push(
+        '<button class="button secondary" type="button" data-issue-action="new-round">Переоценить</button>'
+      );
+    }
   }
 
-  if (state.issue.status === "voting") {
-    buttons.push('<button class="button primary" type="button" data-issue-action="reveal">Раскрыть оценки</button>');
+  if (deletable) {
+    buttons.push(
+      '<button class="button danger" type="button" data-issue-action="delete">Удалить задачу</button>'
+    );
   }
-
-  if (state.issue.status === "revealed") {
-    buttons.push('<button class="button secondary" type="button" data-issue-action="new-round">Новый раунд</button>');
-  }
-
-  if (state.issue.status === "estimated") {
-    buttons.push('<button class="button secondary" type="button" data-issue-action="new-round">Переоценить</button>');
-  }
-
-  buttons.push('<button class="button danger" type="button" data-issue-action="delete">Удалить задачу</button>');
 
   root.innerHTML = buttons.join("");
 
   root.querySelectorAll("[data-issue-action]").forEach(button => {
-    button.addEventListener("click", () => issueAction(button.dataset.issueAction));
+    button.addEventListener(
+      "click",
+      () => issueAction(button.dataset.issueAction)
+    );
   });
 }
 
@@ -2922,19 +3225,22 @@ function currentIssueRef() {
 }
 
 async function issueAction(action) {
-  if (!isLead() || !state.issue) return;
+  if (!state.issue) return;
 
   if (action === "edit") {
+    if (!canEditIssue()) return;
     openEditIssueDialog();
     return;
   }
 
   if (action === "move") {
+    if (!canManageEstimation()) return;
     openMoveIssueDialog();
     return;
   }
 
   if (action === "delete") {
+    if (!canDeleteIssue()) return;
     const confirmed = confirm(
       `Удалить задачу «${state.issue.title}»?\n\n` +
       "Будут удалены все раунды и голоса."
@@ -2963,6 +3269,8 @@ async function issueAction(action) {
     }
     return;
   }
+
+  if (!canManageEstimation()) return;
 
   try {
     if (action === "start") {
@@ -3020,7 +3328,7 @@ async function issueAction(action) {
 }
 
 function openMoveIssueDialog() {
-  if (!isLead() || !state.issue) return;
+  if (!canManageEstimation() || !state.issue) return;
 
   const targetSessions = state.sessions.filter(
     session => session.id !== state.sessionId
@@ -3117,7 +3425,7 @@ async function verifyMovedCollections(targetIssueRef, expected) {
 }
 
 async function moveIssueToSession() {
-  if (!isLead() || !state.issue) return;
+  if (!canManageEstimation() || !state.issue) return;
 
   const targetSessionId = $("moveIssueTargetSession").value;
   const messageTarget = $("moveIssueMessage");
@@ -3443,7 +3751,13 @@ async function moveIssueToSession() {
 }
 
 async function castVote(value) {
-  if (!state.issue || state.issue.status !== "voting") return;
+  if (
+    !canVote() ||
+    !state.issue ||
+    state.issue.status !== "voting"
+  ) {
+    return;
+  }
 
   const round = Number(state.issue.currentRound);
   const id = voteDocId(round, currentUser.uid);
@@ -3518,7 +3832,7 @@ function renderResults() {
 }
 
 async function finalizeEstimate() {
-  if (!isLead() || !state.issue) return;
+  if (!canManageEstimation() || !state.issue) return;
 
   const value = Number($("finalEstimate").value);
   const target = $("finalMessage");
@@ -3840,7 +4154,7 @@ async function deleteSessionRecursive(teamId, sessionId) {
 }
 
 async function deleteTeam() {
-  if (!isLead() || !state.teamId) return;
+  if (!isAdmin() || !state.teamId) return;
 
   const team = currentTeam();
   const confirmed = confirm(
@@ -3876,7 +4190,7 @@ async function deleteTeam() {
 }
 
 async function deleteSession() {
-  if (!isLead() || !state.sessionId) return;
+  if (!canManageEstimation() || !state.sessionId) return;
 
   const session = currentSession();
   const confirmed = confirm(
