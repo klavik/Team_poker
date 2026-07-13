@@ -57,7 +57,8 @@ const state = {
   myVote: null,
   rounds: [],
   historicalVotes: [],
-  directoryUsers: []
+  directoryUsers: [],
+  issueAudit: []
 };
 
 let firebaseApp = null;
@@ -69,6 +70,7 @@ let unsubscribeTeams = null;
 let unsubscribeMembers = null;
 let unsubscribeSessions = null;
 let unsubscribeIssues = null;
+let unsubscribeIssueAudit = null;
 let unsubscribeOwnVote = null;
 let unsubscribeVoteStatuses = null;
 let unsubscribeVotes = null;
@@ -270,7 +272,12 @@ function clearVoteListeners() {
 
 function clearIssueListener() {
   unsubscribe(unsubscribeIssues);
+  unsubscribe(unsubscribeIssueAudit);
+
   unsubscribeIssues = null;
+  unsubscribeIssueAudit = null;
+
+  state.issueAudit = [];
   clearVoteListeners();
 }
 
@@ -364,6 +371,7 @@ function bindEvents() {
 
   $("openIssueDialogBtn").addEventListener("click", () => openDialog("issueDialog"));
   $("createIssueBtn").addEventListener("click", createIssue);
+  $("openIssueAuditBtn").addEventListener("click", openIssueAuditDialog);
   $("saveIssueChangesBtn").addEventListener("click", saveIssueChanges);
 
   $("finalizeBtn").addEventListener("click", finalizeEstimate);
@@ -723,7 +731,8 @@ function resetState() {
     myVote: null,
     rounds: [],
     historicalVotes: [],
-    directoryUsers: []
+    directoryUsers: [],
+    issueAudit: []
   });
 
   renderTeams();
@@ -1364,6 +1373,7 @@ function selectSession(sessionId) {
   }
 
   startIssuesListener();
+  startIssueAuditListener();
 }
 
 async function createSession() {
@@ -1466,6 +1476,261 @@ async function finishSession() {
   } catch (error) {
     handleError(error);
   }
+}
+
+function currentActorSnapshot() {
+  const email = normalizeEmail(currentUser?.email);
+  const member = state.members.find(
+    item => normalizeEmail(item.email) === email
+  );
+
+  return {
+    uid: currentUser?.uid || "",
+    email,
+    displayName:
+      member?.displayName ||
+      currentUser?.displayName ||
+      email
+  };
+}
+
+function issueAuditCollectionRef(
+  teamId = state.teamId,
+  sessionId = state.sessionId
+) {
+  return collection(
+    db,
+    "teams", teamId,
+    "sessions", sessionId,
+    "issue_audit"
+  );
+}
+
+function createIssueAuditRef(
+  teamId = state.teamId,
+  sessionId = state.sessionId
+) {
+  return doc(issueAuditCollectionRef(teamId, sessionId));
+}
+
+function buildIssueAuditEvent({
+  action,
+  issueId,
+  issueTitle,
+  changedFields = [],
+  before = null,
+  after = null,
+  snapshot = null
+}) {
+  const actor = currentActorSnapshot();
+
+  return {
+    action,
+    issueId,
+    issueTitle,
+    actorUid: actor.uid,
+    actorEmail: actor.email,
+    actorDisplayName: actor.displayName,
+    changedFields,
+    before,
+    after,
+    snapshot,
+    occurredAt: serverTimestamp()
+  };
+}
+
+function startIssueAuditListener() {
+  unsubscribe(unsubscribeIssueAudit);
+  unsubscribeIssueAudit = null;
+  state.issueAudit = [];
+
+  if (!state.teamId || !state.sessionId) {
+    renderIssueAudit();
+    return;
+  }
+
+  unsubscribeIssueAudit = onSnapshot(
+    issueAuditCollectionRef(),
+    { includeMetadataChanges: true },
+    snapshot => {
+      state.issueAudit = snapshot.docs
+        .map(auditDoc => ({ id: auditDoc.id, ...auditDoc.data() }))
+        .sort(
+          (left, right) =>
+            timestampValue(right.occurredAt) -
+            timestampValue(left.occurredAt)
+        );
+
+      renderIssueAudit();
+    },
+    error => handleError(error)
+  );
+}
+
+function issueActorName(email, storedName = "") {
+  const normalized = normalizeEmail(email);
+  const member = state.members.find(
+    item => normalizeEmail(item.email) === normalized
+  );
+
+  return member?.displayName || storedName || email || "Неизвестный пользователь";
+}
+
+function issueAuditActionText(action) {
+  return ({
+    created: "добавил задачу",
+    edited: "отредактировал задачу",
+    deleted: "удалил задачу"
+  })[action] || action;
+}
+
+function issueAuditActionClass(action) {
+  return ({
+    created: "created",
+    edited: "edited",
+    deleted: "deleted"
+  })[action] || "";
+}
+
+function syntheticCreationEvents() {
+  const auditedIssueIds = new Set(
+    state.issueAudit
+      .filter(event => event.action === "created")
+      .map(event => event.issueId)
+  );
+
+  return state.issues
+    .filter(issue => !auditedIssueIds.has(issue.id))
+    .map(issue => ({
+      id: `legacy-created-${issue.id}`,
+      action: "created",
+      issueId: issue.id,
+      issueTitle: issue.title,
+      actorUid: issue.createdByUid || "",
+      actorEmail: issue.createdByEmail || "",
+      actorDisplayName: "",
+      occurredAt: issue.createdAt,
+      legacy: true
+    }));
+}
+
+function combinedIssueAuditEvents() {
+  return [...state.issueAudit, ...syntheticCreationEvents()]
+    .sort(
+      (left, right) =>
+        timestampValue(right.occurredAt) -
+        timestampValue(left.occurredAt)
+    );
+}
+
+function renderIssueAudit() {
+  const root = $("issueAuditList");
+  if (!root) return;
+
+  const events = combinedIssueAuditEvents();
+
+  if (!events.length) {
+    root.innerHTML = `
+      <div class="empty-state">
+        Журнал пока пуст. Новые добавления, редактирования и удаления
+        будут сохраняться автоматически.
+      </div>
+    `;
+    return;
+  }
+
+  root.innerHTML = events.map(event => {
+    const actor = issueActorName(
+      event.actorEmail,
+      event.actorDisplayName
+    );
+    const occurredAt = formatHistoryDate(event.occurredAt);
+    const fields = Array.isArray(event.changedFields)
+      ? event.changedFields
+      : [];
+
+    return `
+      <div class="issue-audit-entry">
+        <div class="issue-audit-marker ${issueAuditActionClass(event.action)}"></div>
+
+        <div class="issue-audit-content">
+          <div class="issue-audit-title">
+            <strong>${escapeHtml(actor)}</strong>
+            ${escapeHtml(issueAuditActionText(event.action))}
+          </div>
+
+          <div class="issue-audit-task">
+            ${escapeHtml(event.issueTitle || "Задача без названия")}
+          </div>
+
+          ${
+            fields.length
+              ? `
+                  <div class="issue-audit-fields">
+                    Изменено: ${fields.map(escapeHtml).join(", ")}
+                  </div>
+                `
+              : ""
+          }
+
+          <div class="issue-audit-meta">
+            ${escapeHtml(event.actorEmail || "")}
+            ${occurredAt ? ` · ${escapeHtml(occurredAt)}` : ""}
+            ${event.legacy ? " · данные из существующей задачи" : ""}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function openIssueAuditDialog() {
+  renderIssueAudit();
+  openDialog("issueAuditDialog");
+}
+
+function renderIssueAuthorMeta() {
+  const root = $("issueAuthorMeta");
+  const issue = state.issue;
+
+  if (!root || !issue) {
+    if (root) root.innerHTML = "";
+    return;
+  }
+
+  const creatorName = issueActorName(
+    issue.createdByEmail,
+    issue.createdByDisplayName
+  );
+  const createdAt = formatHistoryDate(issue.createdAt);
+
+  const editorName = issue.contentUpdatedByEmail
+    ? issueActorName(
+        issue.contentUpdatedByEmail,
+        issue.contentUpdatedByDisplayName
+      )
+    : "";
+
+  const editedAt = formatHistoryDate(issue.contentUpdatedAt);
+
+  root.innerHTML = `
+    <span>
+      Добавил:
+      <strong>${escapeHtml(creatorName)}</strong>
+      ${createdAt ? ` · ${escapeHtml(createdAt)}` : ""}
+    </span>
+    ${
+      editorName
+        ? `
+            <span>
+              Последнее редактирование:
+              <strong>${escapeHtml(editorName)}</strong>
+              ${editedAt ? ` · ${escapeHtml(editedAt)}` : ""}
+            </span>
+          `
+        : ""
+    }
+  `;
 }
 
 function startIssuesListener() {
@@ -1646,14 +1911,60 @@ async function saveIssueChanges() {
     return setFormMessage(target, "Ссылка должна начинаться с http:// или https://.");
   }
 
+  const before = {
+    title: state.issue.title || "",
+    gitlabUrl: state.issue.gitlabUrl || null,
+    description: state.issue.description || null
+  };
+
+  const after = {
+    title,
+    gitlabUrl: externalUrl || null,
+    description: description || null
+  };
+
+  const changedFields = [];
+
+  if (before.title !== after.title) changedFields.push("название");
+  if (before.gitlabUrl !== after.gitlabUrl) changedFields.push("внешняя ссылка");
+  if (before.description !== after.description) changedFields.push("описание");
+
+  if (!changedFields.length) {
+    closeDialog("editIssueDialog");
+    toast("Изменений нет.", "success", 2000);
+    return;
+  }
+
   await withButton($("saveIssueChangesBtn"), "Сохранение...", async () => {
     try {
-      await updateDoc(currentIssueRef(), {
+      const actor = currentActorSnapshot();
+      const auditRef = createIssueAuditRef();
+      const batch = writeBatch(db);
+
+      batch.update(currentIssueRef(), {
         title,
         gitlabUrl: externalUrl || null,
         description: description || null,
+        contentUpdatedByUid: actor.uid,
+        contentUpdatedByEmail: actor.email,
+        contentUpdatedByDisplayName: actor.displayName,
+        contentUpdatedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
+
+      batch.set(
+        auditRef,
+        buildIssueAuditEvent({
+          action: "edited",
+          issueId: state.issue.id,
+          issueTitle: title,
+          changedFields,
+          before,
+          after
+        })
+      );
+
+      await batch.commit();
 
       closeDialog("editIssueDialog");
       toast("Задача обновлена.", "success", 2500);
@@ -1684,27 +1995,48 @@ async function createIssue() {
 
   await withButton($("createIssueBtn"), "Добавление...", async () => {
     try {
-      await addDoc(
+      const actor = currentActorSnapshot();
+      const issueRef = doc(
         collection(
           db,
           "teams", state.teamId,
           "sessions", state.sessionId,
           "issues"
-        ),
-        {
-          title,
-          gitlabUrl: gitlabUrl || null,
-          description: description || null,
-          currentRound: 1,
-          status: "pending",
-          finalEstimate: null,
-          sortOrder: maxOrder + 10,
-          createdByUid: currentUser.uid,
-          createdByEmail: normalizeEmail(currentUser.email),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        }
+        )
       );
+      const auditRef = createIssueAuditRef();
+      const batch = writeBatch(db);
+
+      batch.set(issueRef, {
+        title,
+        gitlabUrl: gitlabUrl || null,
+        description: description || null,
+        currentRound: 1,
+        status: "pending",
+        finalEstimate: null,
+        sortOrder: maxOrder + 10,
+        createdByUid: actor.uid,
+        createdByEmail: actor.email,
+        createdByDisplayName: actor.displayName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      batch.set(
+        auditRef,
+        buildIssueAuditEvent({
+          action: "created",
+          issueId: issueRef.id,
+          issueTitle: title,
+          snapshot: {
+            title,
+            gitlabUrl: gitlabUrl || null,
+            description: description || null
+          }
+        })
+      );
+
+      await batch.commit();
 
       $("newIssueTitle").value = "";
       $("newIssueUrl").value = "";
@@ -2128,6 +2460,7 @@ function renderIssue() {
 
   $("issueTitle").textContent = issue.title;
   $("issueDescription").textContent = issue.description || "";
+  renderIssueAuthorMeta();
 
   show($("gitlabLink"), Boolean(issue.gitlabUrl));
   if (issue.gitlabUrl) $("gitlabLink").href = issue.gitlabUrl;
@@ -2235,8 +2568,22 @@ async function issueAction(action) {
     if (!confirmed) return;
 
     try {
-      await deleteIssueRecursive(state.teamId, state.sessionId, state.issue.id);
-      toast("Задача удалена.", "success");
+      await deleteIssueRecursive(
+        state.teamId,
+        state.sessionId,
+        state.issue.id,
+        {
+          auditDeletion: true,
+          issueSnapshot: {
+            title: state.issue.title || "",
+            gitlabUrl: state.issue.gitlabUrl || null,
+            description: state.issue.description || null,
+            status: state.issue.status || null,
+            finalEstimate: state.issue.finalEstimate ?? null
+          }
+        }
+      );
+      toast("Задача удалена. Запись сохранена в журнале.", "success");
     } catch (error) {
       handleError(error);
     }
@@ -2487,7 +2834,12 @@ async function deleteCollectionRefs(collectionRef) {
   await deleteRefsInChunks(snapshot.docs.map(item => item.ref));
 }
 
-async function deleteIssueRecursive(teamId, sessionId, issueId) {
+async function deleteIssueRecursive(
+  teamId,
+  sessionId,
+  issueId,
+  options = {}
+) {
   const issueRef = doc(
     db,
     "teams", teamId,
@@ -2497,12 +2849,7 @@ async function deleteIssueRecursive(teamId, sessionId, issueId) {
 
   /*
     До раскрытия раунда тимлид не может читать чужие значения голосов.
-    Поэтому нельзя делать getDocs(collection(issueRef, "votes")).
-
-    Для каждого голоса приложение создаёт документ vote_status
-    с таким же идентификатором. Эти статусы доступны всей команде,
-    поэтому по ним можно сформировать ссылки на документы голосов
-    и удалить их, не читая скрытые оценки.
+    Поэтому голоса удаляются по идентификаторам из vote_status.
   */
   const statusSnapshot = await getDocs(
     collection(issueRef, "vote_status")
@@ -2516,11 +2863,26 @@ async function deleteIssueRecursive(teamId, sessionId, issueId) {
 
   await deleteRefsInChunks(voteRefs);
   await deleteRefsInChunks(statusRefs);
-
-  // История раскрытых раундов доступна тимлиду для чтения и удаления.
   await deleteCollectionRefs(collection(issueRef, "rounds"));
 
-  await deleteDoc(issueRef);
+  const finalBatch = writeBatch(db);
+
+  if (options.auditDeletion && options.issueSnapshot) {
+    const auditRef = createIssueAuditRef(teamId, sessionId);
+
+    finalBatch.set(
+      auditRef,
+      buildIssueAuditEvent({
+        action: "deleted",
+        issueId,
+        issueTitle: options.issueSnapshot.title || "Задача без названия",
+        snapshot: options.issueSnapshot
+      })
+    );
+  }
+
+  finalBatch.delete(issueRef);
+  await finalBatch.commit();
 }
 
 async function deleteSessionRecursive(teamId, sessionId) {
@@ -2531,6 +2893,7 @@ async function deleteSessionRecursive(teamId, sessionId) {
     await deleteIssueRecursive(teamId, sessionId, issueDoc.id);
   }
 
+  await deleteCollectionRefs(collection(sessionRef, "issue_audit"));
   await deleteDoc(sessionRef);
 }
 

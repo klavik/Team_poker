@@ -95,7 +95,12 @@
       <section class="panel">
         <div class="panel-title-row">
           <h2>Задачи</h2>
-          <button id="openIssueDialogBtn" class="button secondary icon-button" type="button" title="Добавить задачу">＋</button>
+          <div class="panel-title-actions">
+            <button id="openIssueAuditBtn" class="button secondary compact" type="button">
+              Журнал
+            </button>
+            <button id="openIssueDialogBtn" class="button secondary icon-button" type="button" title="Добавить задачу">＋</button>
+          </div>
         </div>
 
         <div id="issueList" class="item-list"></div>
@@ -127,6 +132,7 @@
           </div>
 
           <div id="issueDescription" class="issue-description"></div>
+          <div id="issueAuthorMeta" class="issue-author-meta"></div>
         </section>
 
         <div class="content-grid">
@@ -403,5 +409,26 @@
     <div id="editIssueMessage" class="form-message"></div>
   </form>
 </dialog>
+
+<dialog id="issueAuditDialog">
+  <form method="dialog" class="dialog-card wide-dialog" onsubmit="return false">
+    <div class="dialog-title-row">
+      <div>
+        <h2>Журнал задач сессии</h2>
+        <p class="muted small">
+          Кто и когда добавлял, редактировал и удалял задачи.
+        </p>
+      </div>
+      <button class="button secondary icon-button" type="button" data-close-dialog="issueAuditDialog">×</button>
+    </div>
+
+    <div id="issueAuditList" class="issue-audit-list"></div>
+
+    <div class="actions">
+      <button class="button secondary" type="button" data-close-dialog="issueAuditDialog">Закрыть</button>
+    </div>
+  </form>
+</dialog>
+
 </body>
 </html>

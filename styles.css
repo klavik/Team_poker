@@ -510,3 +510,100 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 .link-button:hover {
   color: var(--accent-hover);
 }
+
+
+.panel-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.issue-author-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.issue-author-meta strong {
+  color: var(--text);
+}
+
+.issue-audit-list {
+  display: grid;
+  gap: 0;
+  max-height: min(65vh, 680px);
+  margin-top: 14px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.issue-audit-entry {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.issue-audit-entry:last-child {
+  border-bottom: 0;
+}
+
+.issue-audit-marker {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.issue-audit-marker.created {
+  background: var(--success);
+}
+
+.issue-audit-marker.edited {
+  background: var(--accent);
+}
+
+.issue-audit-marker.deleted {
+  background: var(--danger);
+}
+
+.issue-audit-title {
+  font-size: 13px;
+}
+
+.issue-audit-task {
+  margin-top: 3px;
+  font-weight: 750;
+}
+
+.issue-audit-fields {
+  margin-top: 5px;
+  color: #344054;
+  font-size: 12px;
+}
+
+.issue-audit-meta {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 700px) {
+  .panel-title-actions {
+    gap: 5px;
+  }
+
+  .issue-author-meta {
+    display: grid;
+    gap: 5px;
+  }
+}
