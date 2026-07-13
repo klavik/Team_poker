@@ -8,8 +8,6 @@
   <link rel="stylesheet" href="./styles.css">
   <script src="./firebase-config.js"></script>
   <script type="module" src="./app.js"></script>
-  <script src="./team-calculator-integration-config.js"></script>
-  <script type="module" src="./calculator-integration-status.js"></script>
 </head>
 <body>
 <header class="app-header">
@@ -501,6 +499,22 @@
     </div>
   </form>
 </dialog>
+
+
+<script src="./team-calculator-integration-config.js"></script>
+<script type="module">
+  window.addEventListener("load", async () => {
+    try {
+      await import("./calculator-integration-status.js");
+    } catch (error) {
+      console.error(
+        "Модуль интеграции Team_calculator не загрузился. " +
+        "Основная работа Team_poker продолжена без интеграции.",
+        error
+      );
+    }
+  }, { once: true });
+</script>
 
 </body>
 </html>
