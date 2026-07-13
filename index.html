@@ -444,6 +444,61 @@
 </dialog>
 
 
+
+<dialog id="assignEstimatedRoleDialog">
+  <form method="dialog" class="dialog-card" onsubmit="return false">
+    <div class="dialog-title-row">
+      <h2>Указать направление оценки</h2>
+      <button
+        class="button secondary icon-button"
+        type="button"
+        data-close-dialog="assignEstimatedRoleDialog"
+      >×</button>
+    </div>
+
+    <div class="direction-assignment-summary">
+      <div>
+        <span>Задача</span>
+        <strong id="assignEstimatedRoleIssueTitle"></strong>
+      </div>
+      <div>
+        <span>Текущая итоговая оценка</span>
+        <strong id="assignEstimatedRoleCurrentEstimate"></strong>
+      </div>
+    </div>
+
+    <label for="assignEstimatedRoleSelect">Направление оценки</label>
+    <select id="assignEstimatedRoleSelect">
+      <option value="">Выберите направление</option>
+      <option value="backend">Backend</option>
+      <option value="frontend">Frontend</option>
+    </select>
+
+    <div class="message info">
+      Направление можно назначить только один раз. После сохранения его
+      нельзя заменить через интерфейс, чтобы не переписать историю оценки.
+    </div>
+
+    <div class="actions">
+      <button
+        id="saveEstimatedRoleBtn"
+        class="button primary"
+        type="button"
+      >Сохранить направление</button>
+      <button
+        class="button secondary"
+        type="button"
+        data-close-dialog="assignEstimatedRoleDialog"
+      >Отмена</button>
+    </div>
+
+    <div
+      id="assignEstimatedRoleMessage"
+      class="form-message"
+    ></div>
+  </form>
+</dialog>
+
 <dialog id="moveIssueDialog">
   <form method="dialog" class="dialog-card" onsubmit="return false">
     <div class="dialog-title-row">
@@ -499,7 +554,6 @@
     </div>
   </form>
 </dialog>
-
 
 <script src="./team-calculator-integration-config.js"></script>
 <script type="module">

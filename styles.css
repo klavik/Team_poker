@@ -746,3 +746,43 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
     max-width: 100%;
   }
 }
+
+
+.direction-button {
+  border-color: #d7c5f2;
+  background: #f5efff;
+  color: #6b3fa0;
+}
+
+.direction-button:hover {
+  border-color: #bda3e5;
+  background: #ece2fb;
+}
+
+.direction-assignment-summary {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.direction-assignment-summary > div {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.direction-assignment-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.direction-assignment-summary strong {
+  display: block;
+  margin-top: 3px;
+}
+
+.issue-audit-marker.direction {
+  background: #7a4db3;
+}
