@@ -1639,7 +1639,7 @@ async function addMember() {
   await withButton($("addMemberBtn"), "Добавление...", async () => {
     try {
       const teamRef = doc(db, "teams", state.teamId);
-      const memberRef = doc(db, "teams", state.teamId, "members", memberEmail);
+      const memberRef = doc(db, "teams", state.teamId, "members", email);
       const batch = writeBatch(db);
 
       batch.set(memberRef, {
