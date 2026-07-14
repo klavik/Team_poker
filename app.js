@@ -4173,6 +4173,26 @@ async function finalizeEstimate() {
       updatedAt: serverTimestamp()
     });
 
+    const gitlabJob = buildGitLabEstimateJob({
+      issue: state.issue,
+      finalEstimate: value,
+      estimatedRole,
+      estimateVersion: nextVersion,
+      finalizedBy: actor
+    });
+
+    if (gitlabJob) {
+      batch.set(
+        doc(
+          db,
+          "teams", state.teamId,
+          gitlabJob.collectionName,
+          gitlabJob.id
+        ),
+        gitlabJob.data
+      );
+    }
+
     // Для существующей сессии без снимка направления фиксируем его
     // в момент первой новой оценки.
     if (!isValidDevelopmentArea(currentSession()?.developmentArea)) {
@@ -4191,12 +4211,152 @@ async function finalizeEstimate() {
     await batch.commit();
 
     toast(
-      `Оценка сохранена: ${developmentAreaLabel(estimatedRole)} · ${value} ч.д. · версия ${nextVersion}.`,
-      "success"
+      gitlabJob
+        ? `Оценка сохранена и поставлена в очередь GitLab: ${developmentAreaLabel(estimatedRole)} · ${value} ч.д. · версия ${nextVersion}.`
+        : `Оценка сохранена: ${developmentAreaLabel(estimatedRole)} · ${value} ч.д. · версия ${nextVersion}.`,
+      "success",
+      5000
     );
   } catch (error) {
     handleError(error, target);
   }
+}
+
+
+function configuredGitLabIntegration() {
+  const config = window.GITLAB_CONNECTOR_INTEGRATION || {};
+
+  if (config.enabled === false) {
+    return null;
+  }
+
+  const gitlabBaseUrl = String(
+    config.gitlabBaseUrl || ""
+  ).trim();
+
+  if (
+    !gitlabBaseUrl
+    || gitlabBaseUrl.includes("REPLACE_")
+  ) {
+    return null;
+  }
+
+  return {
+    gitlabBaseUrl: gitlabBaseUrl.replace(/\/+$/, ""),
+    label: String(
+      config.label || "estimate::done"
+    ).trim() || "estimate::done",
+    jobsCollection: String(
+      config.jobsCollection || "gitlab_jobs"
+    ).trim() || "gitlab_jobs"
+  };
+}
+
+function gitLabEstimateJobId({
+  sessionId,
+  issueId,
+  estimatedRole,
+  estimateVersion
+}) {
+  return [
+    sessionId,
+    issueId,
+    estimatedRole,
+    `v${estimateVersion}`
+  ].join("__");
+}
+
+function buildGitLabEstimateJob({
+  issue,
+  finalEstimate,
+  estimatedRole,
+  estimateVersion,
+  finalizedBy
+}) {
+  const config = configuredGitLabIntegration();
+  const externalTaskUrl = String(
+    issue?.gitlabUrl || ""
+  ).trim();
+
+  if (!config || !externalTaskUrl) {
+    return null;
+  }
+
+  const jobId = gitLabEstimateJobId({
+    sessionId: state.sessionId,
+    issueId: issue.id,
+    estimatedRole,
+    estimateVersion
+  });
+
+  return {
+    id: jobId,
+    collectionName: config.jobsCollection,
+    data: {
+      schemaVersion: 1,
+      type: "sync_gitlab_estimate",
+      status: "pending",
+      idempotencyKey: jobId,
+
+      teamId: state.teamId,
+      sessionId: state.sessionId,
+      issueId: issue.id,
+      issueTitle: issue.title || "",
+      externalTaskUrl,
+
+      estimatedRole,
+      finalEstimate: Number(finalEstimate),
+      estimateVersion: Number(estimateVersion),
+      gitlabLabel: config.label,
+      gitlabBaseUrl: config.gitlabBaseUrl,
+
+      requestedByUid: finalizedBy.uid,
+      requestedByEmail: finalizedBy.email,
+      requestedByDisplayName: finalizedBy.displayName,
+      requestedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      attempts: 0
+    }
+  };
+}
+
+function currentGitLabJobDescriptor(issue = state.issue) {
+  if (
+    !issue
+    || issue.finalEstimate == null
+    || !isValidDevelopmentArea(issue.estimatedRole)
+    || !issue.estimateVersion
+  ) {
+    return null;
+  }
+
+  const config = configuredGitLabIntegration();
+  const externalTaskUrl = String(
+    issue.gitlabUrl || ""
+  ).trim();
+
+  if (!config || !externalTaskUrl) {
+    return null;
+  }
+
+  const jobId = gitLabEstimateJobId({
+    sessionId: state.sessionId,
+    issueId: issue.id,
+    estimatedRole: issue.estimatedRole,
+    estimateVersion: Number(issue.estimateVersion)
+  });
+
+  return {
+    id: jobId,
+    teamId: state.teamId,
+    sessionId: state.sessionId,
+    issueId: issue.id,
+    collectionName: config.jobsCollection,
+    externalTaskUrl,
+    estimatedRole: issue.estimatedRole,
+    finalEstimate: Number(issue.finalEstimate),
+    estimateVersion: Number(issue.estimateVersion)
+  };
 }
 
 function timestampToIso(value) {
@@ -4262,7 +4422,10 @@ async function copyTeamCalendarPayload() {
 // Точка расширения для будущего прямого вызова интеграции.
 window.TeamPokerIntegration = {
   getCurrentEstimatePayload: () =>
-    buildTeamCalendarEstimatePayload()
+    buildTeamCalendarEstimatePayload(),
+
+  getCurrentGitLabJobDescriptor: () =>
+    currentGitLabJobDescriptor()
 };
 
 async function copyEstimate() {

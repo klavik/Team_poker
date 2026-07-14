@@ -1,0 +1,459 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email != null;
+    }
+
+    function currentEmail() {
+      return request.auth.token.email;
+    }
+
+    function teamPath(teamId) {
+      return /databases/$(database)/documents/teams/$(teamId);
+    }
+
+    function teamData(teamId) {
+      return get(teamPath(teamId)).data;
+    }
+
+    function memberPath(teamId, email) {
+      return /databases/$(database)/documents/teams/$(teamId)/members/$(email);
+    }
+
+    function hasMemberDocument(teamId) {
+      return signedIn()
+        && exists(memberPath(teamId, currentEmail()));
+    }
+
+    function storedMemberRole(teamId) {
+      return hasMemberDocument(teamId)
+        ? get(memberPath(teamId, currentEmail())).data.role
+        : null;
+    }
+
+    function effectiveRole(teamId) {
+      return !signedIn()
+        ? null
+        : currentEmail() == teamData(teamId).ownerEmail
+          ? 'admin'
+          : storedMemberRole(teamId);
+    }
+
+    function validRole(role) {
+      return role in ['admin', 'lead', 'initiator', 'member'];
+    }
+
+    function hasValidEstimatedRole(data) {
+      return 'estimatedRole' in data
+        && data.estimatedRole in ['backend', 'frontend'];
+    }
+
+    function estimatedRoleFieldsChanged(before, after) {
+      return after.diff(before).affectedKeys().hasAny([
+        'estimatedRole',
+        'estimatedTeamId',
+        'estimatedTeamName',
+        'estimatedRoleAssignedByUid',
+        'estimatedRoleAssignedByEmail',
+        'estimatedRoleAssignedByDisplayName',
+        'estimatedRoleAssignedAt'
+      ]);
+    }
+
+    function isTeamMember(teamId) {
+      return signedIn()
+        && currentEmail() in teamData(teamId).memberEmails;
+    }
+
+    function isTeamAdmin(teamId) {
+      return isTeamMember(teamId)
+        && effectiveRole(teamId) == 'admin';
+    }
+
+    function canManageEstimation(teamId) {
+      return isTeamMember(teamId)
+        && effectiveRole(teamId) in ['admin', 'lead'];
+    }
+
+    function canVote(teamId) {
+      return isTeamMember(teamId)
+        && effectiveRole(teamId) in ['lead', 'member'];
+    }
+
+    function canCreateIssue(teamId) {
+      return isTeamMember(teamId)
+        && effectiveRole(teamId) in ['admin', 'lead', 'initiator'];
+    }
+
+    function validTeam(data) {
+      return data.ownerEmail is string
+        && data.ownerUid is string
+        && data.memberEmails is list
+        && data.leadEmails is list
+        && data.memberEmails.size() <= 100
+        && data.leadEmails.size() <= 20
+        && data.ownerEmail in data.memberEmails
+        && data.ownerEmail in data.leadEmails
+        && data.memberEmails.hasAll(data.leadEmails)
+        && data.developmentArea in ['backend', 'frontend'];
+    }
+
+    function issuePath(teamId, sessionId, issueId) {
+      return /databases/$(database)/documents/teams/$(teamId)/sessions/$(sessionId)/issues/$(issueId);
+    }
+
+    function issueData(teamId, sessionId, issueId) {
+      return get(issuePath(teamId, sessionId, issueId)).data;
+    }
+
+    function isIssueOwner(data) {
+      return signedIn()
+        && (
+          (
+            'createdByUid' in data
+            && data.createdByUid == request.auth.uid
+          )
+          || (
+            'createdByEmail' in data
+            && data.createdByEmail == currentEmail()
+          )
+        );
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+
+      allow create, update: if signedIn()
+        && userId == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == currentEmail()
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string;
+
+      allow delete: if false;
+    }
+
+    match /gitlab_connector_status/{connectorId} {
+      allow read, write: if false;
+    }
+
+    match /teams/{teamId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerEmail == currentEmail()
+        && request.resource.data.memberEmails == [currentEmail()]
+        && request.resource.data.leadEmails == [currentEmail()]
+        && validTeam(request.resource.data);
+
+      allow read: if signedIn()
+        && currentEmail() in resource.data.memberEmails;
+
+      allow update: if isTeamAdmin(teamId)
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.ownerEmail == resource.data.ownerEmail
+        && validTeam(request.resource.data);
+
+      allow delete: if isTeamAdmin(teamId);
+
+      match /members/{memberEmail} {
+        allow read: if isTeamMember(teamId);
+
+        allow create: if isTeamAdmin(teamId)
+          && request.resource.data.email == memberEmail
+          && request.resource.data.email is string
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 100
+          && validRole(request.resource.data.role);
+
+        allow update: if (
+          isTeamAdmin(teamId)
+          && request.resource.data.email == memberEmail
+          && request.resource.data.email is string
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 100
+          && validRole(request.resource.data.role)
+        ) || (
+          signedIn()
+          && memberEmail == currentEmail()
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 100
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['displayName', 'updatedAt'])
+        );
+
+        allow delete: if isTeamAdmin(teamId)
+          && memberEmail != teamData(teamId).ownerEmail;
+      }
+
+
+      match /gitlab_jobs/{jobId} {
+        allow read: if isTeamMember(teamId);
+
+        allow create: if canManageEstimation(teamId)
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.type == 'sync_gitlab_estimate'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.idempotencyKey == jobId
+          && request.resource.data.teamId == teamId
+          && request.resource.data.sessionId is string
+          && request.resource.data.issueId is string
+          && request.resource.data.externalTaskUrl is string
+          && request.resource.data.estimatedRole
+            in ['backend', 'frontend']
+          && request.resource.data.finalEstimate is number
+          && request.resource.data.finalEstimate > 0
+          && request.resource.data.estimateVersion is number
+          && request.resource.data.estimateVersion >= 1
+          && request.resource.data.requestedByUid
+            == request.auth.uid
+          && request.resource.data.requestedByEmail
+            == currentEmail();
+
+        // Клиент может только повторно поставить собственное
+        // завершившееся с ошибкой задание в очередь.
+        // Коннектор использует Admin SDK и не ограничен Rules.
+        allow update: if canManageEstimation(teamId)
+          && resource.data.status == 'failed'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.teamId == resource.data.teamId
+          && request.resource.data.sessionId
+            == resource.data.sessionId
+          && request.resource.data.issueId
+            == resource.data.issueId
+          && request.resource.data.externalTaskUrl
+            == resource.data.externalTaskUrl
+          && request.resource.data.estimatedRole
+            == resource.data.estimatedRole
+          && request.resource.data.finalEstimate
+            == resource.data.finalEstimate
+          && request.resource.data.estimateVersion
+            == resource.data.estimateVersion
+          && request.resource.data.retryRequestedByUid
+            == request.auth.uid
+          && request.resource.data.retryRequestedByEmail
+            == currentEmail();
+
+        allow delete: if isTeamAdmin(teamId);
+      }
+
+      match /issue_redirects/{redirectId} {
+        allow read: if isTeamMember(teamId);
+        allow create, update, delete: if canManageEstimation(teamId);
+      }
+
+      match /sessions/{sessionId} {
+        allow read: if isTeamMember(teamId);
+
+        allow create: if canManageEstimation(teamId)
+          && request.resource.data.createdByUid == request.auth.uid
+          && request.resource.data.developmentArea in ['backend', 'frontend']
+          && request.resource.data.developmentArea
+            == teamData(teamId).developmentArea;
+
+        allow update: if canManageEstimation(teamId)
+          || (
+            effectiveRole(teamId) == 'initiator'
+            && !('developmentAreaCapturedAt' in resource.data)
+            && request.resource.data.developmentArea
+              == teamData(teamId).developmentArea
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly([
+                'developmentArea',
+                'estimatedTeamId',
+                'estimatedTeamName',
+                'developmentAreaCapturedAt',
+                'updatedAt'
+              ])
+          );
+
+        allow delete: if canManageEstimation(teamId);
+
+        match /issue_audit/{auditId} {
+          allow read: if isTeamMember(teamId);
+
+          allow create: if (
+            (
+              canManageEstimation(teamId)
+              && request.resource.data.action in [
+                'created',
+                'edited',
+                'deleted',
+                'moved_out',
+                'moved_in'
+              ]
+            ) || (
+              isTeamAdmin(teamId)
+              && request.resource.data.action
+                == 'estimated_role_assigned'
+            ) || (
+              effectiveRole(teamId) == 'initiator'
+              && request.resource.data.action in [
+                'created',
+                'edited',
+                'deleted'
+              ]
+            )
+          )
+          && request.resource.data.issueId is string
+          && request.resource.data.issueTitle is string
+          && request.resource.data.actorUid == request.auth.uid
+          && request.resource.data.actorEmail == currentEmail();
+
+          allow update: if false;
+          allow delete: if canManageEstimation(teamId);
+        }
+
+        match /issues/{issueId} {
+          allow read: if isTeamMember(teamId);
+
+          allow create: if (
+            canCreateIssue(teamId)
+            && request.resource.data.createdByUid == request.auth.uid
+            && request.resource.data.createdByEmail == currentEmail()
+            && request.resource.data.estimatedRole
+              in ['backend', 'frontend']
+          ) || (
+            canManageEstimation(teamId)
+            && request.resource.data.moveState == 'copying'
+            && request.resource.data.movedByUid == request.auth.uid
+            && request.resource.data.movedFromSessionId is string
+          );
+
+          allow update: if (
+            canManageEstimation(teamId)
+            && (
+              !estimatedRoleFieldsChanged(
+                resource.data,
+                request.resource.data
+              )
+              || (
+                isTeamAdmin(teamId)
+                && !hasValidEstimatedRole(resource.data)
+                && hasValidEstimatedRole(
+                  request.resource.data
+                )
+                && request.resource.data.estimatedRoleAssignedByUid
+                  == request.auth.uid
+                && request.resource.data.estimatedRoleAssignedByEmail
+                  == currentEmail()
+              )
+            )
+          ) || (
+            effectiveRole(teamId) == 'initiator'
+            && isIssueOwner(resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly([
+                'title',
+                'gitlabUrl',
+                'description',
+                'contentUpdatedByUid',
+                'contentUpdatedByEmail',
+                'contentUpdatedByDisplayName',
+                'contentUpdatedAt',
+                'updatedAt'
+              ])
+            && request.resource.data.contentUpdatedByUid
+              == request.auth.uid
+            && request.resource.data.contentUpdatedByEmail
+              == currentEmail()
+          );
+
+          allow delete: if canManageEstimation(teamId)
+            || (
+              effectiveRole(teamId) == 'initiator'
+              && isIssueOwner(resource.data)
+              && resource.data.status == 'pending'
+            );
+
+          match /vote_status/{statusId} {
+            allow read: if isTeamMember(teamId);
+
+            allow create, update: if (
+              canVote(teamId)
+              && request.resource.data.userId == request.auth.uid
+              && request.resource.data.voterEmail == currentEmail()
+              && issueData(teamId, sessionId, issueId).status == 'voting'
+              && request.resource.data.round
+                == issueData(teamId, sessionId, issueId).currentRound
+            ) || (
+              canManageEstimation(teamId)
+              && issueData(teamId, sessionId, issueId).moveState
+                == 'copying'
+            );
+
+            allow delete: if canManageEstimation(teamId)
+              || resource.data.userId == request.auth.uid;
+          }
+
+          match /rounds/{roundId} {
+            allow read: if isTeamMember(teamId);
+
+            allow create: if canManageEstimation(teamId);
+
+            allow update: if canManageEstimation(teamId)
+              && (
+                !estimatedRoleFieldsChanged(
+                  resource.data,
+                  request.resource.data
+                )
+                || (
+                  isTeamAdmin(teamId)
+                  && !hasValidEstimatedRole(resource.data)
+                  && hasValidEstimatedRole(
+                    request.resource.data
+                  )
+                  && request.resource.data.estimatedRoleAssignedByUid
+                    == request.auth.uid
+                  && request.resource.data.estimatedRoleAssignedByEmail
+                    == currentEmail()
+                )
+              );
+
+            allow delete: if canManageEstimation(teamId);
+          }
+
+          match /votes/{voteId} {
+            allow read: if isTeamMember(teamId)
+              && (
+                resource.data.userId == request.auth.uid
+                || resource.data.round
+                  < issueData(teamId, sessionId, issueId).currentRound
+                || (
+                  resource.data.round
+                    == issueData(teamId, sessionId, issueId).currentRound
+                  && issueData(teamId, sessionId, issueId).status
+                    in ['revealed', 'estimated']
+                )
+              );
+
+            allow create, update: if (
+              canVote(teamId)
+              && request.resource.data.userId == request.auth.uid
+              && request.resource.data.voterEmail == currentEmail()
+              && request.resource.data.value
+                in [0.5, 1, 2, 3, 5, 8, 13]
+              && issueData(teamId, sessionId, issueId).status == 'voting'
+              && request.resource.data.round
+                == issueData(teamId, sessionId, issueId).currentRound
+            ) || (
+              canManageEstimation(teamId)
+              && issueData(teamId, sessionId, issueId).moveState
+                == 'copying'
+              && request.resource.data.value
+                in [0.5, 1, 2, 3, 5, 8, 13]
+            );
+
+            allow delete: if canManageEstimation(teamId)
+              || resource.data.userId == request.auth.uid;
+          }
+        }
+      }
+    }
+  }
+}
