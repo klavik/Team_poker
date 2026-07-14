@@ -488,8 +488,13 @@ async function init() {
 
   firebaseApp = initializeApp(firebaseConfig);
   auth = getAuth(firebaseApp);
-  await setPersistence(auth, browserLocalPersistence);
 
+  /*
+    Firestore должен быть инициализирован до первого await.
+    Иначе подключаемые модули интеграций успевают вызвать getFirestore()
+    с настройками по умолчанию, после чего initializeFirestore()
+    с persistent cache завершается ошибкой different options.
+  */
   const cache = runtimeConfig.enablePersistentCache === false
     ? memoryLocalCache()
     : persistentLocalCache({
@@ -501,6 +506,8 @@ async function init() {
     { localCache: cache },
     runtimeConfig.firestoreDatabaseId || "(default)"
   );
+
+  await setPersistence(auth, browserLocalPersistence);
 
   onAuthStateChanged(auth, user => {
     currentUser = user;
