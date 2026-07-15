@@ -81,6 +81,7 @@ let editingMemberEmail = null;
 let pendingTaskLink = readTaskLinkFromHash();
 let taskLinkErrorShown = false;
 let resolvingMovedLink = false;
+let pendingCreatedIssueId = null;
 
 const $ = id => document.getElementById(id);
 
@@ -2262,8 +2263,19 @@ function startIssuesListener() {
         .map(issueDoc => ({ id: issueDoc.id, ...issueDoc.data() }))
         .filter(issue => issue.moveState !== "copying")
         .sort((a, b) => {
-          const sortDiff = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
-          return sortDiff || timestampValue(a.createdAt) - timestampValue(b.createdAt);
+          const groupDiff =
+            (a.status === "estimated" ? 1 : 0)
+            - (b.status === "estimated" ? 1 : 0);
+
+          if (groupDiff) return groupDiff;
+
+          const sortDiff =
+            Number(a.sortOrder || 0)
+            - Number(b.sortOrder || 0);
+
+          return sortDiff
+            || timestampValue(b.createdAt)
+              - timestampValue(a.createdAt);
         });
 
       const previousIssue = state.issue;
@@ -2274,18 +2286,44 @@ function startIssuesListener() {
         ? pendingTaskLink.issueId
         : null;
 
-      const nextIssueId = linkedIssueId && state.issues.some(issue => issue.id === linkedIssueId)
-        ? linkedIssueId
-        : state.issues.some(issue => issue.id === state.issueId)
-          ? state.issueId
-          : state.issues.find(issue => issue.status !== "estimated")?.id
-            || state.issues[0]?.id
-            || null;
+      const createdIssueId =
+        pendingCreatedIssueId
+        && state.issues.some(
+          issue => issue.id === pendingCreatedIssueId
+        )
+          ? pendingCreatedIssueId
+          : null;
+
+      const nextIssueId =
+        linkedIssueId
+        && state.issues.some(
+          issue => issue.id === linkedIssueId
+        )
+          ? linkedIssueId
+          : createdIssueId
+            ? createdIssueId
+            : state.issues.some(
+                issue => issue.id === state.issueId
+              )
+              ? state.issueId
+              : state.issues.find(
+                  issue => issue.status !== "estimated"
+                )?.id
+                || state.issues[0]?.id
+                || null;
 
       state.issueId = nextIssueId;
       state.issue = state.issues.find(issue => issue.id === nextIssueId) || null;
 
       renderIssues();
+
+      if (
+        createdIssueId
+        && createdIssueId === state.issueId
+      ) {
+        focusCreatedIssue(createdIssueId);
+        pendingCreatedIssueId = null;
+      }
 
       if (!state.issue) {
         clearVoteListeners();
@@ -2343,26 +2381,107 @@ function issueStatusText(status) {
   })[status] || status;
 }
 
+function issueListItemHtml(issue) {
+  return `
+    <div
+      class="item ${
+        issue.id === state.issueId ? "active" : ""
+      }"
+      data-issue-id="${issue.id}"
+    >
+      <div class="item-title">
+        ${escapeHtml(issue.title)}
+      </div>
+      <div class="item-meta">
+        ${escapeHtml(issueStatusText(issue.status))}
+        ${
+          issue.finalEstimate
+            ? ` · ${issue.finalEstimate} ч.д.`
+            : ""
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderIssueGroup(title, issues, className) {
+  if (!issues.length) return "";
+
+  return `
+    <section class="issue-list-group ${className}">
+      <div class="issue-list-group-title">
+        <span>${escapeHtml(title)}</span>
+        <span class="issue-list-group-count">
+          ${issues.length}
+        </span>
+      </div>
+      <div class="issue-list-group-items">
+        ${issues.map(issueListItemHtml).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderIssues() {
   const root = $("issueList");
 
   if (!state.issues.length) {
-    root.innerHTML = '<div class="empty-state">Нет задач</div>';
+    root.innerHTML =
+      '<div class="empty-state">Нет задач</div>';
     return;
   }
 
-  root.innerHTML = state.issues.map(issue => `
-    <div class="item ${issue.id === state.issueId ? "active" : ""}" data-issue-id="${issue.id}">
-      <div class="item-title">${escapeHtml(issue.title)}</div>
-      <div class="item-meta">
-        ${escapeHtml(issueStatusText(issue.status))}
-        ${issue.finalEstimate ? ` · ${issue.finalEstimate} ч.д.` : ""}
-      </div>
-    </div>
-  `).join("");
+  const activeIssues = state.issues.filter(
+    issue => issue.status !== "estimated"
+  );
+
+  const estimatedIssues = state.issues.filter(
+    issue => issue.status === "estimated"
+  );
+
+  root.innerHTML = [
+    renderIssueGroup(
+      "Активные",
+      activeIssues,
+      "active-issues"
+    ),
+    renderIssueGroup(
+      "Оценённые",
+      estimatedIssues,
+      "estimated-issues"
+    )
+  ].join("");
 
   root.querySelectorAll("[data-issue-id]").forEach(item => {
-    item.addEventListener("click", () => selectIssue(item.dataset.issueId));
+    item.addEventListener(
+      "click",
+      () => selectIssue(item.dataset.issueId)
+    );
+  });
+}
+
+function focusCreatedIssue(issueId) {
+  requestAnimationFrame(() => {
+    const root = $("issueList");
+    const item = Array.from(
+      root.querySelectorAll("[data-issue-id]")
+    ).find(
+      element => element.dataset.issueId === issueId
+    );
+
+    if (!item) return;
+
+    item.scrollIntoView({
+      block: "start",
+      behavior: "smooth"
+    });
+
+    item.classList.add("just-created");
+
+    window.setTimeout(
+      () => item.classList.remove("just-created"),
+      1800
+    );
   });
 }
 
@@ -2519,10 +2638,16 @@ async function createIssue() {
     );
   }
 
-  const maxOrder = state.issues.reduce(
-    (maximum, issue) => Math.max(maximum, Number(issue.sortOrder || 0)),
-    0
-  );
+  const minOrder = state.issues.length
+    ? state.issues.reduce(
+        (minimum, issue) =>
+          Math.min(
+            minimum,
+            Number(issue.sortOrder || 0)
+          ),
+        Number.POSITIVE_INFINITY
+      )
+    : 0;
 
   await withButton($("createIssueBtn"), "Добавление...", async () => {
     try {
@@ -2550,7 +2675,7 @@ async function createIssue() {
         estimatedTeamName: teamSnapshot.name,
         estimateVersion: 0,
         developmentAreaCapturedAt: serverTimestamp(),
-        sortOrder: maxOrder + 10,
+        sortOrder: minOrder - 10,
         createdByUid: actor.uid,
         createdByEmail: actor.email,
         createdByDisplayName: actor.displayName,
@@ -2585,6 +2710,7 @@ async function createIssue() {
         })
       );
 
+      pendingCreatedIssueId = issueRef.id;
       await batch.commit();
 
       $("newIssueTitle").value = "";
@@ -2593,6 +2719,7 @@ async function createIssue() {
       closeDialog("issueDialog");
       toast("Задача добавлена.", "success");
     } catch (error) {
+      pendingCreatedIssueId = null;
       handleError(error, target);
     }
   });
