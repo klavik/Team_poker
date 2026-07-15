@@ -40,7 +40,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   backdrop-filter: blur(10px);
 }
 .header-inner {
-  max-width: 1280px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 16px 20px;
   display: flex;
@@ -60,7 +60,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .user-email { color: var(--muted); font-size: 13px; margin-right: 4px; }
 
 .connection-banner {
-  max-width: 1280px;
+  max-width: 1600px;
   margin: 0 auto 10px;
   padding: 10px 14px;
   border: 1px solid #ffd3a4;
@@ -75,14 +75,66 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   color: var(--success);
 }
 
-.page { max-width: 1280px; margin: 0 auto; padding: 20px; }
+.page {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
 .workspace {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns:
+    minmax(230px, 260px)
+    minmax(290px, 340px)
+    minmax(0, 1fr);
+  grid-template-areas: "sidebar issues content";
   gap: 18px;
   align-items: start;
 }
-.sidebar, .content { min-width: 0; }
+
+.sidebar {
+  grid-area: sidebar;
+}
+
+.issues-column {
+  grid-area: issues;
+  min-width: 0;
+}
+
+.content {
+  grid-area: content;
+}
+
+.sidebar,
+.issues-column,
+.content {
+  min-width: 0;
+}
+
+.issues-panel {
+  position: sticky;
+  top: 96px;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 116px);
+  min-height: 480px;
+  margin-bottom: 0;
+  overflow: hidden;
+}
+
+.issues-panel-header {
+  flex: 0 0 auto;
+}
+
+.issues-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 12px;
+  padding-right: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 310px;
@@ -188,7 +240,56 @@ textarea { min-height: 95px; resize: vertical; }
   text-align: center;
 }
 
-.item-list { display: grid; gap: 8px; margin-top: 12px; }
+.item-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.issue-list-group {
+  display: grid;
+  gap: 8px;
+}
+
+.issue-list-group-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.issue-list-group-count {
+  min-width: 24px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eef1f6;
+  text-align: center;
+  font-size: 11px;
+}
+
+.issue-list-group-items {
+  display: grid;
+  gap: 8px;
+}
+
+.estimated-issues {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.estimated-issues .item {
+  background: #f7f8fb;
+}
+
 .item {
   padding: 10px;
   border: 1px solid var(--border);
@@ -196,7 +297,29 @@ textarea { min-height: 95px; resize: vertical; }
   background: var(--surface-soft);
   cursor: pointer;
 }
-.item:hover, .item.active { border-color: var(--accent); background: var(--accent-soft); }
+.item:hover,
+.item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.item.just-created {
+  animation: issue-created-highlight 1.8s ease;
+}
+
+@keyframes issue-created-highlight {
+  0%,
+  35% {
+    border-color: var(--accent);
+    background: #ffe3bd;
+    box-shadow: 0 0 0 4px rgba(239, 125, 0, 0.16);
+  }
+
+  100% {
+    box-shadow: none;
+  }
+}
+
 .item-title { font-weight: 750; }
 .item-meta { margin-top: 3px; color: var(--muted); font-size: 12px; }
 
@@ -309,9 +432,34 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 .toast.error { border-color: #efb5b0; background: var(--danger-soft); color: var(--danger); }
 .toast.success { border-color: #b8ddc0; background: var(--success-soft); color: var(--success); }
 
-@media (max-width: 1000px) {
-  .workspace, .content-grid { grid-template-columns: 1fr; }
-  .poker-grid { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 1350px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1050px) {
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "sidebar"
+      "issues"
+      "content";
+  }
+
+  .issues-panel {
+    position: static;
+    height: auto;
+    min-height: 0;
+  }
+
+  .issues-list {
+    max-height: 430px;
+  }
+
+  .poker-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
 }
 @media (max-width: 700px) {
   .page { padding: 12px; }
