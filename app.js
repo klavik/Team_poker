@@ -83,6 +83,13 @@ let taskLinkErrorShown = false;
 let resolvingMovedLink = false;
 let pendingCreatedIssueId = null;
 
+/*
+  Кэш нужен только на время работы страницы. Он позволяет не перечитывать
+  задачи одной и той же сессии при каждом переключении между сессиями.
+*/
+const sessionIssuesCache = new Map();
+let gitlabHistoryRequestId = 0;
+
 const $ = id => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -1089,6 +1096,9 @@ function selectTeam(teamId) {
 
   clearTeamListeners();
 
+  sessionIssuesCache.clear();
+  gitlabHistoryRequestId += 1;
+
   state.teamId = teamId || null;
   state.members = [];
   state.sessions = [];
@@ -1113,6 +1123,9 @@ function selectTeam(teamId) {
 function resetTeamDependentState() {
   editingMemberEmail = null;
   clearTeamListeners();
+
+  sessionIssuesCache.clear();
+  gitlabHistoryRequestId += 1;
 
   state.teamId = null;
   state.members = [];
@@ -1827,6 +1840,7 @@ function selectSession(sessionId) {
 
   startIssuesListener();
   startIssueAuditListener();
+  refreshGitlabIssueHistory();
 }
 
 async function createSession() {
@@ -2247,6 +2261,255 @@ function renderIssueAuthorMeta() {
   `;
 }
 
+function sessionIssuesCacheKey(
+  teamId,
+  sessionId
+) {
+  return `${teamId || ""}:${sessionId || ""}`;
+}
+
+function normalizeGitlabIssueUrl(value) {
+  const source = String(value || "").trim();
+  if (!source) return "";
+
+  try {
+    const url = new URL(source);
+
+    url.protocol = url.protocol.toLowerCase();
+    url.hostname = url.hostname.toLowerCase();
+    url.hash = "";
+    url.search = "";
+    url.pathname = url.pathname.replace(/\/+$/, "");
+
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return source
+      .replace(/[?#].*$/, "")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  }
+}
+
+function cachedSessionIssues(
+  teamId,
+  sessionId
+) {
+  return sessionIssuesCache.get(
+    sessionIssuesCacheKey(teamId, sessionId)
+  ) || [];
+}
+
+function cacheSessionIssues(
+  teamId,
+  sessionId,
+  issues
+) {
+  sessionIssuesCache.set(
+    sessionIssuesCacheKey(teamId, sessionId),
+    issues.map(issue => ({ ...issue }))
+  );
+}
+
+function occurrenceTimestamp(
+  issue,
+  session
+) {
+  return (
+    timestampValue(issue?.createdAt)
+    || timestampValue(session?.createdAt)
+  );
+}
+
+function priorGitlabOccurrences(issue) {
+  const normalizedUrl = normalizeGitlabIssueUrl(
+    issue?.gitlabUrl
+  );
+
+  if (!normalizedUrl) return [];
+
+  const currentSessionData = currentSession();
+  const currentTimestamp = occurrenceTimestamp(
+    issue,
+    currentSessionData
+  );
+
+  const occurrences = [];
+
+  for (const session of state.sessions) {
+    if (session.id === state.sessionId) continue;
+
+    for (
+      const previousIssue
+      of cachedSessionIssues(
+        state.teamId,
+        session.id
+      )
+    ) {
+      if (
+        normalizeGitlabIssueUrl(
+          previousIssue.gitlabUrl
+        ) !== normalizedUrl
+      ) {
+        continue;
+      }
+
+      const previousTimestamp = occurrenceTimestamp(
+        previousIssue,
+        session
+      );
+
+      /*
+        Если обе даты известны, считаем только действительно более раннюю
+        задачу. Для старых документов без createdAt используем порядок
+        сессий как безопасный fallback.
+      */
+      if (
+        currentTimestamp
+        && previousTimestamp
+        && previousTimestamp >= currentTimestamp
+      ) {
+        continue;
+      }
+
+      occurrences.push({
+        issueId: previousIssue.id,
+        issueTitle: previousIssue.title || "",
+        finalEstimate:
+          previousIssue.finalEstimate ?? null,
+        status: previousIssue.status || "",
+        createdAt: previousIssue.createdAt || null,
+        sessionId: session.id,
+        sessionName:
+          session.name
+          || session.iteration
+          || "Другая сессия",
+        sessionCreatedAt: session.createdAt || null
+      });
+    }
+  }
+
+  return occurrences.sort(
+    (left, right) =>
+      (
+        occurrenceTimestamp(
+          right,
+          { createdAt: right.sessionCreatedAt }
+        )
+        - occurrenceTimestamp(
+          left,
+          { createdAt: left.sessionCreatedAt }
+        )
+      )
+  );
+}
+
+function priorGitlabTooltip(occurrences) {
+  const descriptions = occurrences
+    .slice(0, 6)
+    .map(occurrence => {
+      const estimate = occurrence.finalEstimate
+        ? ` · ${occurrence.finalEstimate} ч.д.`
+        : "";
+
+      return (
+        `${occurrence.sessionName}: `
+        + `${occurrence.issueTitle || "задача"}`
+        + estimate
+      );
+    });
+
+  if (occurrences.length > descriptions.length) {
+    descriptions.push(
+      `и ещё ${occurrences.length - descriptions.length}`
+    );
+  }
+
+  return (
+    "Эта GitLab-ссылка уже встречалась ранее. "
+    + descriptions.join("; ")
+  );
+}
+
+async function refreshGitlabIssueHistory() {
+  const requestId = ++gitlabHistoryRequestId;
+  const teamId = state.teamId;
+  const currentSessionId = state.sessionId;
+
+  if (!teamId || !currentSessionId) {
+    renderIssues();
+    return;
+  }
+
+  const sessionsToLoad = state.sessions.filter(
+    session =>
+      session.id !== currentSessionId
+      && !sessionIssuesCache.has(
+        sessionIssuesCacheKey(
+          teamId,
+          session.id
+        )
+      )
+  );
+
+  if (!sessionsToLoad.length) {
+    renderIssues();
+    return;
+  }
+
+  const results = await Promise.allSettled(
+    sessionsToLoad.map(async session => {
+      const snapshot = await getDocs(
+        collection(
+          db,
+          "teams", teamId,
+          "sessions", session.id,
+          "issues"
+        )
+      );
+
+      const issues = snapshot.docs
+        .map(issueDoc => ({
+          id: issueDoc.id,
+          ...issueDoc.data()
+        }))
+        .filter(
+          issue => issue.moveState !== "copying"
+        );
+
+      return {
+        sessionId: session.id,
+        issues
+      };
+    })
+  );
+
+  if (
+    requestId !== gitlabHistoryRequestId
+    || teamId !== state.teamId
+    || currentSessionId !== state.sessionId
+  ) {
+    return;
+  }
+
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      cacheSessionIssues(
+        teamId,
+        result.value.sessionId,
+        result.value.issues
+      );
+    } else {
+      console.warn(
+        "Не удалось загрузить задачи одной из "
+        + "предыдущих сессий для проверки GitLab-ссылок:",
+        result.reason
+      );
+    }
+  }
+
+  renderIssues();
+}
+
 function startIssuesListener() {
   const issuesRef = collection(
     db,
@@ -2260,8 +2523,13 @@ function startIssuesListener() {
     { includeMetadataChanges: true },
     snapshot => {
       state.issues = snapshot.docs
-        .map(issueDoc => ({ id: issueDoc.id, ...issueDoc.data() }))
-        .filter(issue => issue.moveState !== "copying")
+        .map(issueDoc => ({
+          id: issueDoc.id,
+          ...issueDoc.data()
+        }))
+        .filter(
+          issue => issue.moveState !== "copying"
+        )
         .sort((a, b) => {
           const groupDiff =
             (a.status === "estimated" ? 1 : 0)
@@ -2277,6 +2545,12 @@ function startIssuesListener() {
             || timestampValue(b.createdAt)
               - timestampValue(a.createdAt);
         });
+
+      cacheSessionIssues(
+        state.teamId,
+        state.sessionId,
+        state.issues
+      );
 
       const previousIssue = state.issue;
       const linkedIssueId = (
@@ -2382,16 +2656,49 @@ function issueStatusText(status) {
 }
 
 function issueListItemHtml(issue) {
+  const previousOccurrences =
+    priorGitlabOccurrences(issue);
+
+  const wasPreviouslySeen =
+    previousOccurrences.length > 0;
+
+  const duplicateBadge = wasPreviouslySeen
+    ? `
+        <span
+          class="prior-gitlab-badge"
+          title="${escapeHtml(
+            priorGitlabTooltip(
+              previousOccurrences
+            )
+          )}"
+        >
+          Была ранее${
+            previousOccurrences.length > 1
+              ? ` · ${previousOccurrences.length}`
+              : ""
+          }
+        </span>
+      `
+    : "";
+
   return `
     <div
       class="item ${
         issue.id === state.issueId ? "active" : ""
+      } ${
+        wasPreviouslySeen
+          ? "has-prior-gitlab"
+          : ""
       }"
       data-issue-id="${issue.id}"
     >
-      <div class="item-title">
-        ${escapeHtml(issue.title)}
+      <div class="item-title-row">
+        <div class="item-title">
+          ${escapeHtml(issue.title)}
+        </div>
+        ${duplicateBadge}
       </div>
+
       <div class="item-meta">
         ${escapeHtml(issueStatusText(issue.status))}
         ${
