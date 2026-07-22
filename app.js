@@ -2662,24 +2662,51 @@ function issueListItemHtml(issue) {
   const wasPreviouslySeen =
     previousOccurrences.length > 0;
 
-  const duplicateBadge = wasPreviouslySeen
-    ? `
-        <span
-          class="prior-gitlab-badge"
-          title="${escapeHtml(
-            priorGitlabTooltip(
-              previousOccurrences
-            )
-          )}"
-        >
-          Была ранее${
-            previousOccurrences.length > 1
-              ? ` · ${previousOccurrences.length}`
-              : ""
-          }
-        </span>
-      `
-    : "";
+  const latestPreviousOccurrence =
+    previousOccurrences[0] || null;
+
+  const previousTaskLink =
+    latestPreviousOccurrence
+      ? buildTaskLink(
+          state.teamId,
+          latestPreviousOccurrence.sessionId,
+          latestPreviousOccurrence.issueId
+        )
+      : null;
+
+  const duplicateBadge =
+    wasPreviouslySeen && previousTaskLink
+      ? `
+          <a
+            class="prior-gitlab-badge"
+            href="${escapeHtml(previousTaskLink)}"
+            title="${escapeHtml(
+              "Открыть последнее предыдущее упоминание. "
+              + priorGitlabTooltip(
+                  previousOccurrences
+                )
+            )}"
+            aria-label="${escapeHtml(
+              "Открыть предыдущее упоминание задачи "
+              + (
+                latestPreviousOccurrence
+                  .issueTitle
+                || issue.title
+              )
+            )}"
+          >
+            Была ранее${
+              previousOccurrences.length > 1
+                ? ` · ${previousOccurrences.length}`
+                : ""
+            }
+            <span
+              class="prior-gitlab-link-icon"
+              aria-hidden="true"
+            >↗</span>
+          </a>
+        `
+      : "";
 
   return `
     <div
@@ -2762,7 +2789,21 @@ function renderIssues() {
   root.querySelectorAll("[data-issue-id]").forEach(item => {
     item.addEventListener(
       "click",
-      () => selectIssue(item.dataset.issueId)
+      event => {
+        /*
+          Ссылки и кнопки внутри карточки выполняют собственное действие
+          и не должны сначала открывать текущую задачу.
+        */
+        if (
+          event.target.closest(
+            "a, button, input, select, textarea"
+          )
+        ) {
+          return;
+        }
+
+        selectIssue(item.dataset.issueId);
+      }
     );
   });
 }

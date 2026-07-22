@@ -351,7 +351,10 @@ textarea { min-height: 95px; resize: vertical; }
 
 .prior-gitlab-badge {
   flex: 0 0 auto;
-  max-width: 110px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 128px;
   padding: 3px 7px;
   border: 1px solid #e6a23c;
   border-radius: 999px;
@@ -361,8 +364,26 @@ textarea { min-height: 95px; resize: vertical; }
   font-weight: 800;
   line-height: 1.2;
   text-align: center;
+  text-decoration: none;
   white-space: nowrap;
-  cursor: help;
+  cursor: pointer;
+}
+
+.prior-gitlab-badge:hover {
+  border-color: #c77e00;
+  background: #ffe4a3;
+  color: #6f4500;
+  text-decoration: none;
+}
+
+.prior-gitlab-badge:focus-visible {
+  outline: 2px solid #c77e00;
+  outline-offset: 2px;
+}
+
+.prior-gitlab-link-icon {
+  font-size: 11px;
+  line-height: 1;
 }
 
 .item-meta {
