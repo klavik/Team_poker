@@ -320,8 +320,56 @@ textarea { min-height: 95px; resize: vertical; }
   }
 }
 
-.item-title { font-weight: 750; }
-.item-meta { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.item-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.item-title {
+  min-width: 0;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.item.has-prior-gitlab {
+  box-shadow: inset 4px 0 0 #e6a23c;
+}
+
+.item.has-prior-gitlab:not(.active) {
+  border-color: #efc46f;
+  background: #fff8e8;
+}
+
+.item.has-prior-gitlab:hover,
+.item.has-prior-gitlab.active {
+  box-shadow:
+    inset 4px 0 0 #e6a23c,
+    0 0 0 1px rgba(230, 162, 60, 0.08);
+}
+
+.prior-gitlab-badge {
+  flex: 0 0 auto;
+  max-width: 110px;
+  padding: 3px 7px;
+  border: 1px solid #e6a23c;
+  border-radius: 999px;
+  background: #fff1ce;
+  color: #8a5700;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.item-meta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .issue-title { margin: 8px 0 5px; font-size: 23px; letter-spacing: -0.02em; }
 .issue-description { margin-top: 12px; color: #344054; white-space: pre-wrap; }
