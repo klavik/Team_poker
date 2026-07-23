@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Planning Poker — пика</title>
+  <rect width="64" height="64" rx="15" fill="#ef7d00"/>
+  <path
+    fill="#ffffff"
+    d="M32 11C27.4 17.2 17 24.2 13.8 31.7c-2.8 6.6.8 13.2 7.1 13.2 3.4 0 6.2-1.7 8.1-4.2-.4 5.6-2.5 9-6.8 11.2v2.1h19.6v-2.1c-4.3-2.2-6.4-5.6-6.8-11.2 1.9 2.5 4.7 4.2 8.1 4.2 6.3 0 9.9-6.6 7.1-13.2C47 24.2 36.6 17.2 32 11Z"
+  />
+</svg>
