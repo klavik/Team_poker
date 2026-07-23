@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Planning Poker</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon-spade.svg">
   <link rel="stylesheet" href="./styles.css">
   <script src="./firebase-config.js"></script>
   <script src="./gitlab-integration-config.js"></script>
@@ -13,9 +14,18 @@
 <body>
 <header class="app-header">
   <div class="header-inner">
-    <div>
-      <h1>Planning Poker</h1>
-      <p>Оценка backend- и frontend-задач в человеко-днях</p>
+    <div class="brand-block">
+      <img
+        class="brand-logo"
+        src="./favicon-spade.svg"
+        alt=""
+        width="44"
+        height="44"
+      >
+      <div class="brand-copy">
+        <h1>Planning Poker</h1>
+        <p>Оценка backend- и frontend-задач в человеко-днях</p>
+      </div>
     </div>
 
     <div id="userBox" class="user-box hidden">

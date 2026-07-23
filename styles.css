@@ -48,8 +48,36 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   justify-content: space-between;
   gap: 20px;
 }
-.header-inner h1 { margin: 0; font-size: 24px; }
-.header-inner p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+.brand-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand-logo {
+  display: block;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  box-shadow: 0 5px 14px rgba(239, 125, 0, 0.24);
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.header-inner h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.header-inner p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 .user-box {
   display: flex;
   align-items: center;
@@ -1002,4 +1030,17 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 
 .issue-audit-marker.direction {
   background: #7a4db3;
+}
+
+
+@media (max-width: 620px) {
+  .brand-logo {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+  }
+
+  .header-inner h1 {
+    font-size: 21px;
+  }
 }
