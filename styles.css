@@ -1044,3 +1044,92 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
     font-size: 21px;
   }
 }
+
+
+/* Массовый запуск голосования */
+.bulk-voting-controls {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f7f8fb;
+}
+
+.bulk-voting-controls.hidden {
+  display: none;
+}
+
+.bulk-voting-count {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.bulk-voting-controls #startSelectedVotingBtn {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.item-main-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.issue-voting-checkbox {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.item.bulk-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.item.bulk-selected.has-prior-gitlab {
+  box-shadow:
+    inset 4px 0 0 var(--accent),
+    inset 8px 0 0 #e6a23c;
+}
+
+@media (max-width: 1050px) {
+  .bulk-voting-controls {
+    grid-template-columns: auto 1fr auto;
+  }
+
+  .bulk-voting-controls #startSelectedVotingBtn {
+    grid-column: auto;
+    width: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .bulk-voting-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .bulk-voting-count {
+    text-align: left;
+  }
+
+  .bulk-voting-controls #startSelectedVotingBtn {
+    grid-column: auto;
+    width: 100%;
+  }
+}

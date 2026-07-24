@@ -90,6 +90,13 @@ let pendingCreatedIssueId = null;
 const sessionIssuesCache = new Map();
 let gitlabHistoryRequestId = 0;
 
+/*
+  Выбор задач для массового запуска голосования хранится только локально
+  и очищается при переходе в другую команду или сессию.
+*/
+const selectedVotingIssueIds = new Set();
+let bulkVotingInProgress = false;
+
 const $ = id => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -565,6 +572,14 @@ function bindEvents() {
   $("openIssueDialogBtn").addEventListener("click", () => openDialog("issueDialog"));
   $("createIssueBtn").addEventListener("click", createIssue);
   $("openIssueAuditBtn").addEventListener("click", openIssueAuditDialog);
+  $("selectAllVotingIssuesBtn").addEventListener(
+    "click",
+    toggleSelectAllVotingIssues
+  );
+  $("startSelectedVotingBtn").addEventListener(
+    "click",
+    startSelectedVoting
+  );
   $("saveIssueChangesBtn").addEventListener("click", saveIssueChanges);
   $("saveEstimatedRoleBtn").addEventListener(
     "click",
@@ -1098,6 +1113,8 @@ function selectTeam(teamId) {
 
   sessionIssuesCache.clear();
   gitlabHistoryRequestId += 1;
+  selectedVotingIssueIds.clear();
+  bulkVotingInProgress = false;
 
   state.teamId = teamId || null;
   state.members = [];
@@ -1126,6 +1143,8 @@ function resetTeamDependentState() {
 
   sessionIssuesCache.clear();
   gitlabHistoryRequestId += 1;
+  selectedVotingIssueIds.clear();
+  bulkVotingInProgress = false;
 
   state.teamId = null;
   state.members = [];
@@ -1165,6 +1184,7 @@ function startMembersListener() {
       renderAvailableUsers();
       show($("memberEditor"), isAdmin());
       renderTeamControls();
+      renderIssues();
       renderIssue();
     },
     error => handleError(error)
@@ -1818,6 +1838,8 @@ function selectSession(sessionId) {
   }
 
   clearIssueListener();
+  selectedVotingIssueIds.clear();
+  bulkVotingInProgress = false;
 
   state.sessionId = sessionId || null;
   state.issues = [];
@@ -2655,6 +2677,215 @@ function issueStatusText(status) {
   })[status] || status;
 }
 
+function votingSelectableIssues() {
+  if (!canManageEstimation()) return [];
+
+  return state.issues.filter(
+    issue => issue.status === "pending"
+  );
+}
+
+function pruneVotingIssueSelection() {
+  const selectableIds = new Set(
+    votingSelectableIssues().map(issue => issue.id)
+  );
+
+  for (const issueId of selectedVotingIssueIds) {
+    if (!selectableIds.has(issueId)) {
+      selectedVotingIssueIds.delete(issueId);
+    }
+  }
+}
+
+function renderBulkVotingControls() {
+  const controls = $("bulkVotingControls");
+  const selectAllButton = $("selectAllVotingIssuesBtn");
+  const startButton = $("startSelectedVotingBtn");
+  const countElement = $("selectedVotingIssuesCount");
+
+  if (
+    !controls
+    || !selectAllButton
+    || !startButton
+    || !countElement
+  ) {
+    return;
+  }
+
+  pruneVotingIssueSelection();
+
+  const selectableIssues = votingSelectableIssues();
+  const selectedCount = selectedVotingIssueIds.size;
+  const allSelected =
+    selectableIssues.length > 0
+    && selectedCount === selectableIssues.length;
+
+  const visible =
+    canManageEstimation()
+    && Boolean(state.sessionId)
+    && selectableIssues.length > 0;
+
+  show(controls, visible);
+
+  if (!visible) {
+    countElement.textContent = "";
+    return;
+  }
+
+  selectAllButton.textContent = allSelected
+    ? "Снять выбор"
+    : "Выбрать все";
+
+  selectAllButton.disabled = bulkVotingInProgress;
+
+  countElement.textContent =
+    `Выбрано: ${selectedCount} из ${selectableIssues.length}`;
+
+  startButton.textContent = selectedCount
+    ? `Начать голосование · ${selectedCount}`
+    : "Начать голосование";
+
+  startButton.disabled =
+    bulkVotingInProgress
+    || selectedCount === 0;
+}
+
+function toggleVotingIssueSelection(
+  issueId,
+  selected
+) {
+  const issue = state.issues.find(
+    item => item.id === issueId
+  );
+
+  if (
+    !canManageEstimation()
+    || issue?.status !== "pending"
+  ) {
+    selectedVotingIssueIds.delete(issueId);
+    renderIssues();
+    return;
+  }
+
+  if (selected) {
+    selectedVotingIssueIds.add(issueId);
+  } else {
+    selectedVotingIssueIds.delete(issueId);
+  }
+
+  const item = Array.from(
+    $("issueList").querySelectorAll(
+      "[data-issue-id]"
+    )
+  ).find(
+    element => element.dataset.issueId === issueId
+  );
+
+  item?.classList.toggle(
+    "bulk-selected",
+    selected
+  );
+
+  renderBulkVotingControls();
+}
+
+function toggleSelectAllVotingIssues() {
+  if (!canManageEstimation() || bulkVotingInProgress) {
+    return;
+  }
+
+  const selectableIssues = votingSelectableIssues();
+  const allSelected =
+    selectableIssues.length > 0
+    && selectableIssues.every(
+      issue => selectedVotingIssueIds.has(issue.id)
+    );
+
+  if (allSelected) {
+    for (const issue of selectableIssues) {
+      selectedVotingIssueIds.delete(issue.id);
+    }
+  } else {
+    for (const issue of selectableIssues) {
+      selectedVotingIssueIds.add(issue.id);
+    }
+  }
+
+  renderIssues();
+}
+
+async function startSelectedVoting() {
+  if (!canManageEstimation() || bulkVotingInProgress) {
+    return;
+  }
+
+  const issues = state.issues.filter(
+    issue =>
+      issue.status === "pending"
+      && selectedVotingIssueIds.has(issue.id)
+  );
+
+  if (!issues.length) {
+    selectedVotingIssueIds.clear();
+    renderIssues();
+    return;
+  }
+
+  bulkVotingInProgress = true;
+  renderBulkVotingControls();
+
+  try {
+    /*
+      Один batch Firestore допускает до 500 операций. Оставляем запас и
+      обрабатываем большие списки частями по 400 задач.
+    */
+    const chunkSize = 400;
+
+    for (
+      let offset = 0;
+      offset < issues.length;
+      offset += chunkSize
+    ) {
+      const batch = writeBatch(db);
+      const chunk = issues.slice(
+        offset,
+        offset + chunkSize
+      );
+
+      for (const issue of chunk) {
+        batch.update(
+          doc(
+            db,
+            "teams", state.teamId,
+            "sessions", state.sessionId,
+            "issues", issue.id
+          ),
+          {
+            status: "voting",
+            updatedAt: serverTimestamp()
+          }
+        );
+      }
+
+      await batch.commit();
+    }
+
+    selectedVotingIssueIds.clear();
+
+    toast(
+      issues.length === 1
+        ? "Голосование начато по выбранной задаче."
+        : `Голосование начато по ${issues.length} задачам.`,
+      "success"
+    );
+  } catch (error) {
+    handleError(error);
+  } finally {
+    bulkVotingInProgress = false;
+    renderIssues();
+  }
+}
+
 function issueListItemHtml(issue) {
   const previousOccurrences =
     priorGitlabOccurrences(issue);
@@ -2708,6 +2939,28 @@ function issueListItemHtml(issue) {
         `
       : "";
 
+  const selectableForVoting =
+    canManageEstimation()
+    && issue.status === "pending";
+
+  const selectedForVoting =
+    selectableForVoting
+    && selectedVotingIssueIds.has(issue.id);
+
+  const votingCheckbox = selectableForVoting
+    ? `
+        <input
+          class="issue-voting-checkbox"
+          type="checkbox"
+          data-voting-issue-id="${issue.id}"
+          aria-label="${escapeHtml(
+            `Выбрать задачу «${issue.title}» для начала голосования`
+          )}"
+          ${selectedForVoting ? "checked" : ""}
+        >
+      `
+    : "";
+
   return `
     <div
       class="item ${
@@ -2716,23 +2969,33 @@ function issueListItemHtml(issue) {
         wasPreviouslySeen
           ? "has-prior-gitlab"
           : ""
+      } ${
+        selectedForVoting
+          ? "bulk-selected"
+          : ""
       }"
       data-issue-id="${issue.id}"
     >
-      <div class="item-title-row">
-        <div class="item-title">
-          ${escapeHtml(issue.title)}
-        </div>
-        ${duplicateBadge}
-      </div>
+      <div class="item-main-row">
+        ${votingCheckbox}
 
-      <div class="item-meta">
-        ${escapeHtml(issueStatusText(issue.status))}
-        ${
-          issue.finalEstimate
-            ? ` · ${issue.finalEstimate} ч.д.`
-            : ""
-        }
+        <div class="item-body">
+          <div class="item-title-row">
+            <div class="item-title">
+              ${escapeHtml(issue.title)}
+            </div>
+            ${duplicateBadge}
+          </div>
+
+          <div class="item-meta">
+            ${escapeHtml(issueStatusText(issue.status))}
+            ${
+              issue.finalEstimate
+                ? ` · ${issue.finalEstimate} ч.д.`
+                : ""
+            }
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -2759,9 +3022,12 @@ function renderIssueGroup(title, issues, className) {
 function renderIssues() {
   const root = $("issueList");
 
+  pruneVotingIssueSelection();
+
   if (!state.issues.length) {
     root.innerHTML =
       '<div class="empty-state">Нет задач</div>';
+    renderBulkVotingControls();
     return;
   }
 
@@ -2785,6 +3051,20 @@ function renderIssues() {
       "estimated-issues"
     )
   ].join("");
+
+  root.querySelectorAll(
+    "[data-voting-issue-id]"
+  ).forEach(checkbox => {
+    checkbox.addEventListener(
+      "change",
+      event => toggleVotingIssueSelection(
+        event.currentTarget.dataset.votingIssueId,
+        event.currentTarget.checked
+      )
+    );
+  });
+
+  renderBulkVotingControls();
 
   root.querySelectorAll("[data-issue-id]").forEach(item => {
     item.addEventListener(
