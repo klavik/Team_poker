@@ -133,6 +133,33 @@
         </div>
 
         <div
+          id="bulkVotingControls"
+          class="bulk-voting-controls hidden"
+        >
+          <button
+            id="selectAllVotingIssuesBtn"
+            class="button secondary compact"
+            type="button"
+          >
+            Выбрать все
+          </button>
+
+          <span
+            id="selectedVotingIssuesCount"
+            class="bulk-voting-count"
+          ></span>
+
+          <button
+            id="startSelectedVotingBtn"
+            class="button primary compact"
+            type="button"
+            disabled
+          >
+            Начать голосование
+          </button>
+        </div>
+
+        <div
           id="issueList"
           class="item-list issues-list"
         ></div>
