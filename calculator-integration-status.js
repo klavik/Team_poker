@@ -141,15 +141,26 @@ function currentPayload() {
     estimatedRole: String(
       payload.estimatedRole || ""
     ).trim(),
-    finalEstimate: Number(payload.finalEstimate),
+    eventType: String(
+      payload.eventType || "estimate_finalized"
+    ).trim(),
+    finalEstimate:
+      payload.finalEstimate == null
+        ? null
+        : Number(payload.finalEstimate),
     estimateVersion: Math.max(
-      1,
-      Number(payload.estimateVersion) || 1
+      0,
+      Number(payload.estimateVersion) || 0
     ),
     integrationSchemaVersion: Math.max(
       1,
       Number(payload.integrationSchemaVersion) || 1
     ),
+    reestimate:
+      payload.reestimate
+      && typeof payload.reestimate === "object"
+        ? payload.reestimate
+        : null,
     transfer:
       payload.transfer?.isTransferred === true
         ? payload.transfer
@@ -168,9 +179,16 @@ function currentPayload() {
     return null;
   }
 
+  const reestimateRequired =
+    normalized.eventType === "reestimate_required"
+    || normalized.reestimate?.required === true;
+
   if (
-    !Number.isFinite(normalized.finalEstimate)
-    || normalized.finalEstimate <= 0
+    !reestimateRequired
+    && (
+      !Number.isFinite(normalized.finalEstimate)
+      || normalized.finalEstimate <= 0
+    )
   ) {
     return null;
   }
@@ -189,12 +207,24 @@ function payloadKey(payload) {
         ].join("-")
       : "not-moved";
 
+  const reestimateSignature =
+    payload.reestimate?.required === true
+      ? [
+          "reestimate",
+          payload.reestimate.reason || "",
+          payload.reestimate.requestedAt || "",
+          payload.reestimate.previousEstimateVersion || 0
+        ].join("-")
+      : "estimate";
+
   return [
     payload.taskId,
     payload.estimatedRole,
     payload.estimateVersion,
+    payload.eventType || "estimate_finalized",
     `schema${payload.integrationSchemaVersion || 1}`,
-    transferSignature
+    transferSignature,
+    reestimateSignature
   ].join(":");
 }
 
@@ -267,13 +297,15 @@ function renderCurrentState() {
     && ["synced", "ignored_stale"].includes(stored.status)
   ) {
     setStatus(
-      `Передано в общий пул Team_calculator · версия ${
-        payload.estimateVersion
-      }${
-        payload.transfer?.isTransferred
-          ? " · перенос отмечен"
-          : ""
-      }.`,
+      payload.reestimate?.required === true
+        ? "Задача передана в список Team_calculator «На переоценку»."
+        : `Передано в общий пул Team_calculator · версия ${
+            payload.estimateVersion
+          }${
+            payload.transfer?.isTransferred
+              ? " · перенос отмечен"
+              : ""
+          }.`,
       "ok"
     );
     return;
@@ -290,7 +322,9 @@ function renderCurrentState() {
   }
 
   setStatus(
-    "Оценка готова к автоматической передаче.",
+    payload.reestimate?.required === true
+      ? "Задача готова к передаче в список «На переоценку»."
+      : "Оценка готова к автоматической передаче.",
     "warn"
   );
 }
@@ -325,7 +359,9 @@ async function sendPayload(payload) {
 
   inFlightKey = key;
   setStatus(
-    "Оценка передаётся в общий пул Team_calculator…",
+    payload.reestimate?.required === true
+      ? "Задача передаётся в список Team_calculator «На переоценку»…"
+      : "Оценка передаётся в общий пул Team_calculator…",
     "warn"
   );
 
@@ -373,13 +409,15 @@ async function sendPayload(payload) {
     retryAfterByKey.delete(key);
 
     setStatus(
-      `Передано в общий пул Team_calculator · версия ${
-        payload.estimateVersion
-      }${
-        payload.transfer?.isTransferred
-          ? " · перенос отмечен"
-          : ""
-      }.`,
+      payload.reestimate?.required === true
+        ? "Задача передана в список Team_calculator «На переоценку»."
+        : `Передано в общий пул Team_calculator · версия ${
+            payload.estimateVersion
+          }${
+            payload.transfer?.isTransferred
+              ? " · перенос отмечен"
+              : ""
+          }.`,
       "ok"
     );
   } catch (error) {

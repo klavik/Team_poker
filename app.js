@@ -2681,6 +2681,14 @@ function issueStatusText(status) {
   })[status] || status;
 }
 
+function issueDisplayStatusText(issue) {
+  if (issue?.reestimateRequired === true) {
+    return "На переоценку";
+  }
+
+  return issueStatusText(issue?.status);
+}
+
 function votingSelectableIssues() {
   if (!canManageEstimation()) return [];
 
@@ -3006,14 +3014,31 @@ function issueListItemHtml(issue) {
       `
     : "";
 
-  const issueBadges = transferBadge || duplicateBadge
-    ? `
-        <div class="item-title-badges">
-          ${transferBadge}
-          ${duplicateBadge}
-        </div>
-      `
-    : "";
+  const reestimateBadge =
+    issue.reestimateRequired === true
+      ? `
+          <span
+            class="reestimate-issue-badge"
+            title="После переноса требуется повторное голосование и новая итоговая оценка."
+          >
+            <span aria-hidden="true">↻</span>
+            На переоценку
+          </span>
+        `
+      : "";
+
+  const issueBadges =
+    transferBadge
+    || reestimateBadge
+    || duplicateBadge
+      ? `
+          <div class="item-title-badges">
+            ${reestimateBadge}
+            ${transferBadge}
+            ${duplicateBadge}
+          </div>
+        `
+      : "";
 
   const selectableForVoting =
     canManageEstimation()
@@ -3064,7 +3089,7 @@ function issueListItemHtml(issue) {
           </div>
 
           <div class="item-meta">
-            ${escapeHtml(issueStatusText(issue.status))}
+            ${escapeHtml(issueDisplayStatusText(issue))}
             ${
               issue.finalEstimate
                 ? ` · ${issue.finalEstimate} ч.д.`
@@ -3893,7 +3918,7 @@ function renderIssue() {
 
   $("issueStatus").innerHTML = `
     <span class="status-pill ${statusClass}">
-      ${escapeHtml(issueStatusText(issue.status))}
+      ${escapeHtml(issueDisplayStatusText(issue))}
     </span>
     <span class="area-badge compact ${developmentAreaClass(estimateDirection)}">
       ${escapeHtml(developmentAreaLabel(estimateDirection))}
@@ -3911,10 +3936,28 @@ function renderIssue() {
       || transferInfo.movedBy.email
       || "";
 
+    const previousEstimate =
+      issue.previousEstimate?.finalEstimate != null
+        ? `${Number(
+            issue.previousEstimate.finalEstimate
+          )} ч.д.`
+        : "";
+
     transferNotice.innerHTML = `
       <strong>↪ Перенесена из сессии «${escapeHtml(
         transferInfo.fromSessionName || "Без названия"
       )}»</strong>
+      ${
+        issue.reestimateRequired === true
+          ? `<span class="reestimate-notice-line">
+              ↻ Требуется переоценка${
+                previousEstimate
+                  ? ` · прежняя оценка: ${escapeHtml(previousEstimate)}`
+                  : ""
+              }
+            </span>`
+          : ""
+      }
       ${
         transferInfo.movedAtLabel || movedBy
           ? `<span>${escapeHtml(
@@ -4688,9 +4731,49 @@ async function moveIssueToSession() {
 
         const actor = currentActorSnapshot();
 
+        const previousEstimate =
+          sourceData.finalEstimate != null
+            ? {
+                finalEstimate:
+                  Number(sourceData.finalEstimate),
+                estimatedRole:
+                  sourceData.estimatedRole || null,
+                estimateVersion:
+                  Number(sourceData.estimateVersion || 0),
+                finalizedAt:
+                  sourceData.finalizedAt || null,
+                finalizedByUid:
+                  sourceData.finalizedByUid || null,
+                finalizedByEmail:
+                  sourceData.finalizedByEmail || null,
+                finalizedByDisplayName:
+                  sourceData.finalizedByDisplayName || null,
+                sourceSessionId,
+                sourceSessionName:
+                  sourceSession?.name || ""
+              }
+            : (
+                sourceData.previousEstimate
+                && typeof sourceData.previousEstimate === "object"
+                  ? sourceData.previousEstimate
+                  : null
+              );
+
+        const hasPreviousRoundData =
+          sourceData.status !== "pending"
+          || votes.length > 0
+          || statuses.length > 0
+          || rounds.length > 0
+          || sourceData.finalEstimate != null;
+
+        const reestimateRound =
+          hasPreviousRoundData
+            ? Number(sourceData.currentRound || 1) + 1
+            : Number(sourceData.currentRound || 1);
+
         setFormMessage(
           messageTarget,
-          "Создаём проверяемую копию в новой сессии. Исходная задача всё ещё остаётся на месте.",
+          "Создаём проверяемую копию в новой сессии и переводим задачу в список на переоценку. Исходная задача всё ещё остаётся на месте.",
           "info"
         );
 
@@ -4698,6 +4781,27 @@ async function moveIssueToSession() {
         await setDoc(targetIssueRef, {
           ...sourceData,
           sortOrder: targetSortOrder,
+
+          status: "pending",
+          currentRound: reestimateRound,
+          finalEstimate: null,
+          finalizedAt: null,
+          finalizedByUid: null,
+          finalizedByEmail: null,
+          finalizedByDisplayName: null,
+
+          reestimateRequired: true,
+          reestimateReason: "transferred",
+          reestimateRequestedAt:
+            serverTimestamp(),
+          reestimateRequestedByUid:
+            actor.uid,
+          reestimateRequestedByEmail:
+            actor.email,
+          reestimateRequestedByDisplayName:
+            actor.displayName,
+          previousEstimate,
+
           moveState: "copying",
           movedFromSessionId: sourceSessionId,
           movedFromSessionName: sourceSession?.name || "",
@@ -5079,6 +5183,25 @@ async function finalizeEstimate() {
       finalizedByEmail: actor.email,
       finalizedByDisplayName: actor.displayName,
       status: "estimated",
+
+      reestimateRequired: false,
+      reestimatedAt:
+        state.issue.reestimateRequired === true
+          ? serverTimestamp()
+          : state.issue.reestimatedAt || null,
+      reestimatedByUid:
+        state.issue.reestimateRequired === true
+          ? actor.uid
+          : state.issue.reestimatedByUid || null,
+      reestimatedByEmail:
+        state.issue.reestimateRequired === true
+          ? actor.email
+          : state.issue.reestimatedByEmail || null,
+      reestimatedByDisplayName:
+        state.issue.reestimateRequired === true
+          ? actor.displayName
+          : state.issue.reestimatedByDisplayName || null,
+
       updatedAt: serverTimestamp()
     });
 
@@ -5276,18 +5399,93 @@ function timestampToIso(value) {
 }
 
 function buildTeamCalendarEstimatePayload(issue = state.issue) {
-  if (!issue || issue.finalEstimate == null) return null;
+  if (!issue) return null;
   if (!isValidDevelopmentArea(issue.estimatedRole)) return null;
 
+  const reestimateRequired =
+    issue.reestimateRequired === true;
+
+  if (
+    !reestimateRequired
+    && issue.finalEstimate == null
+  ) {
+    return null;
+  }
+
+  const previousEstimate =
+    issue.previousEstimate
+    && typeof issue.previousEstimate === "object"
+      ? issue.previousEstimate
+      : null;
+
   return {
-    integrationSchemaVersion: 2,
+    integrationSchemaVersion: 3,
+    eventType: reestimateRequired
+      ? "reestimate_required"
+      : "estimate_finalized",
+
     taskId: issue.id,
     title: issue.title || "",
     externalTaskUrl: issue.gitlabUrl || null,
     estimatedRole: issue.estimatedRole,
-    finalEstimate: Number(issue.finalEstimate),
-    estimateVersion: Number(issue.estimateVersion || 1),
+
+    finalEstimate:
+      issue.finalEstimate == null
+        ? null
+        : Number(issue.finalEstimate),
+
+    estimateVersion: Number(
+      issue.estimateVersion || 0
+    ),
+
     finalizedAt: timestampToIso(issue.finalizedAt),
+
+    reestimate: reestimateRequired
+      ? {
+          required: true,
+          reason:
+            issue.reestimateReason
+            || "transferred",
+          requestedAt:
+            timestampToIso(
+              issue.reestimateRequestedAt
+            ),
+          requestedBy: {
+            uid:
+              issue.reestimateRequestedByUid
+              || null,
+            email:
+              issue.reestimateRequestedByEmail
+              || null,
+            displayName:
+              issue.reestimateRequestedByDisplayName
+              || null
+          },
+          previousFinalEstimate:
+            previousEstimate?.finalEstimate == null
+              ? null
+              : Number(
+                  previousEstimate.finalEstimate
+                ),
+          previousEstimateVersion:
+            Number(
+              previousEstimate?.estimateVersion
+              || issue.estimateVersion
+              || 0
+            ),
+          previousFinalizedAt:
+            timestampToIso(
+              previousEstimate?.finalizedAt
+            )
+        }
+      : {
+          required: false,
+          resolvedAt:
+            timestampToIso(
+              issue.reestimatedAt
+            )
+        },
+
     team: {
       id: issue.estimatedTeamId || state.teamId,
       name: issue.estimatedTeamName || currentTeam()?.name || ""
