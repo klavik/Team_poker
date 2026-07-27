@@ -581,6 +581,10 @@ function bindEvents() {
     startSelectedVoting
   );
   $("saveIssueChangesBtn").addEventListener("click", saveIssueChanges);
+  $("confirmMoveIssueBtn").addEventListener(
+    "click",
+    moveIssueToSession
+  );
   $("saveEstimatedRoleBtn").addEventListener(
     "click",
     assignEstimatedRole
@@ -2886,6 +2890,55 @@ async function startSelectedVoting() {
   }
 }
 
+
+function issueTransferInfo(issue = state.issue) {
+  if (!issue || !issue.movedFromSessionId) {
+    return null;
+  }
+
+  return {
+    isTransferred: true,
+    fromSessionId: String(
+      issue.movedFromSessionId || ""
+    ),
+    fromSessionName: String(
+      issue.movedFromSessionName || ""
+    ),
+    toSessionId: String(state.sessionId || ""),
+    toSessionName: String(
+      currentSession()?.name || ""
+    ),
+    movedAt: timestampToIso(issue.movedAt),
+    movedAtLabel: formatHistoryDate(issue.movedAt),
+    movedBy: {
+      uid: issue.movedByUid || null,
+      email: issue.movedByEmail || null,
+      displayName:
+        issue.movedByDisplayName || null
+    }
+  };
+}
+
+function issueTransferTooltip(issue) {
+  const transfer = issueTransferInfo(issue);
+
+  if (!transfer) return "";
+
+  const details = [
+    transfer.fromSessionName
+      ? `Из сессии «${transfer.fromSessionName}»`
+      : "Перенесена из другой сессии",
+    transfer.toSessionName
+      ? `в сессию «${transfer.toSessionName}»`
+      : "",
+    transfer.movedAtLabel
+      ? `Дата переноса: ${transfer.movedAtLabel}`
+      : ""
+  ].filter(Boolean);
+
+  return details.join(". ");
+}
+
 function issueListItemHtml(issue) {
   const previousOccurrences =
     priorGitlabOccurrences(issue);
@@ -2939,6 +2992,29 @@ function issueListItemHtml(issue) {
         `
       : "";
 
+  const transferInfo = issueTransferInfo(issue);
+
+  const transferBadge = transferInfo
+    ? `
+        <span
+          class="transferred-issue-badge"
+          title="${escapeHtml(issueTransferTooltip(issue))}"
+        >
+          <span aria-hidden="true">↪</span>
+          Перенесена
+        </span>
+      `
+    : "";
+
+  const issueBadges = transferBadge || duplicateBadge
+    ? `
+        <div class="item-title-badges">
+          ${transferBadge}
+          ${duplicateBadge}
+        </div>
+      `
+    : "";
+
   const selectableForVoting =
     canManageEstimation()
     && issue.status === "pending";
@@ -2984,7 +3060,7 @@ function issueListItemHtml(issue) {
             <div class="item-title">
               ${escapeHtml(issue.title)}
             </div>
-            ${duplicateBadge}
+            ${issueBadges}
           </div>
 
           <div class="item-meta">
@@ -3825,6 +3901,37 @@ function renderIssue() {
   `;
 
   $("issueTitle").textContent = issue.title;
+
+  const transferInfo = issueTransferInfo(issue);
+  const transferNotice = $("issueTransferNotice");
+
+  if (transferNotice && transferInfo) {
+    const movedBy =
+      transferInfo.movedBy.displayName
+      || transferInfo.movedBy.email
+      || "";
+
+    transferNotice.innerHTML = `
+      <strong>↪ Перенесена из сессии «${escapeHtml(
+        transferInfo.fromSessionName || "Без названия"
+      )}»</strong>
+      ${
+        transferInfo.movedAtLabel || movedBy
+          ? `<span>${escapeHtml(
+              [
+                transferInfo.movedAtLabel,
+                movedBy ? `перенёс: ${movedBy}` : ""
+              ].filter(Boolean).join(" · ")
+            )}</span>`
+          : ""
+      }
+    `;
+    show(transferNotice);
+  } else if (transferNotice) {
+    transferNotice.innerHTML = "";
+    show(transferNotice, false);
+  }
+
   $("issueDescription").textContent = issue.description || "";
   renderIssueAuthorMeta();
 
@@ -5133,6 +5240,7 @@ function buildTeamCalendarEstimatePayload(issue = state.issue) {
   if (!isValidDevelopmentArea(issue.estimatedRole)) return null;
 
   return {
+    integrationSchemaVersion: 2,
     taskId: issue.id,
     title: issue.title || "",
     externalTaskUrl: issue.gitlabUrl || null,
@@ -5148,6 +5256,7 @@ function buildTeamCalendarEstimatePayload(issue = state.issue) {
       id: state.sessionId,
       name: currentSession()?.name || ""
     },
+    transfer: issueTransferInfo(issue),
     source: "team_poker"
   };
 }

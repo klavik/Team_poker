@@ -145,7 +145,15 @@ function currentPayload() {
     estimateVersion: Math.max(
       1,
       Number(payload.estimateVersion) || 1
-    )
+    ),
+    integrationSchemaVersion: Math.max(
+      1,
+      Number(payload.integrationSchemaVersion) || 1
+    ),
+    transfer:
+      payload.transfer?.isTransferred === true
+        ? payload.transfer
+        : null
   };
 
   if (!normalized.taskId || !normalized.title) {
@@ -171,10 +179,22 @@ function currentPayload() {
 }
 
 function payloadKey(payload) {
+  const transferSignature =
+    payload.transfer?.isTransferred === true
+      ? [
+          "moved",
+          payload.transfer.fromSessionId || "",
+          payload.transfer.toSessionId || "",
+          payload.transfer.movedAt || ""
+        ].join("-")
+      : "not-moved";
+
   return [
     payload.taskId,
     payload.estimatedRole,
-    payload.estimateVersion
+    payload.estimateVersion,
+    `schema${payload.integrationSchemaVersion || 1}`,
+    transferSignature
   ].join(":");
 }
 
@@ -249,6 +269,10 @@ function renderCurrentState() {
     setStatus(
       `Передано в общий пул Team_calculator · версия ${
         payload.estimateVersion
+      }${
+        payload.transfer?.isTransferred
+          ? " · перенос отмечен"
+          : ""
       }.`,
       "ok"
     );
@@ -351,6 +375,10 @@ async function sendPayload(payload) {
     setStatus(
       `Передано в общий пул Team_calculator · версия ${
         payload.estimateVersion
+      }${
+        payload.transfer?.isTransferred
+          ? " · перенос отмечен"
+          : ""
       }.`,
       "ok"
     );
