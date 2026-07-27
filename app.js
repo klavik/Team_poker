@@ -4615,6 +4615,7 @@ async function moveIssueToSession() {
     "Перенос...",
     async () => {
       let targetCreated = false;
+      let moveStage = "чтение исходной задачи";
 
       try {
         setFormMessage(
@@ -4623,6 +4624,7 @@ async function moveIssueToSession() {
           "info"
         );
 
+        moveStage = "чтение исходной задачи";
         const sourceSnapshot = await getDoc(sourceIssueRef);
 
         if (!sourceSnapshot.exists()) {
@@ -4637,6 +4639,7 @@ async function moveIssueToSession() {
           );
         }
 
+        moveStage = "проверка целевой сессии";
         const existingTarget = await getDoc(targetIssueRef);
 
         if (existingTarget.exists()) {
@@ -4658,6 +4661,7 @@ async function moveIssueToSession() {
         const sourceStatusesRef = collection(sourceIssueRef, "vote_status");
         const sourceRoundsRef = collection(sourceIssueRef, "rounds");
 
+        moveStage = "чтение голосов и истории";
         const [votes, statuses, rounds, targetIssuesSnapshot] =
           await Promise.all([
             readCollectionDocuments(sourceVotesRef),
@@ -4690,6 +4694,7 @@ async function moveIssueToSession() {
           "info"
         );
 
+        moveStage = "создание копии задачи";
         await setDoc(targetIssueRef, {
           ...sourceData,
           sortOrder: targetSortOrder,
@@ -4705,14 +4710,17 @@ async function moveIssueToSession() {
 
         targetCreated = true;
 
+        moveStage = "копирование голосов";
         await writeDocumentsInChunks(
           collection(targetIssueRef, "votes"),
           votes
         );
+        moveStage = "копирование статусов голосования";
         await writeDocumentsInChunks(
           collection(targetIssueRef, "vote_status"),
           statuses
         );
+        moveStage = "копирование истории раундов";
         await writeDocumentsInChunks(
           collection(targetIssueRef, "rounds"),
           rounds
@@ -4724,6 +4732,7 @@ async function moveIssueToSession() {
           "info"
         );
 
+        moveStage = "проверка созданной копии";
         await verifyMovedCollections(targetIssueRef, {
           votes: votes.length,
           statuses: statuses.length,
@@ -4837,6 +4846,7 @@ async function moveIssueToSession() {
         // после копирования и проверки всех вложенных коллекций.
         finalBatch.delete(sourceIssueRef);
 
+        moveStage = "финальное завершение переноса";
         await finalBatch.commit();
 
         // Вложенные документы старой задачи теперь являются только
@@ -4876,7 +4886,37 @@ async function moveIssueToSession() {
           6000
         );
       } catch (error) {
-        handleError(error, messageTarget);
+        const permissionDenied = [
+          "permission-denied",
+          "firestore/permission-denied"
+        ].includes(error?.code);
+
+        if (permissionDenied) {
+          setFormMessage(
+            messageTarget,
+            "Firestore отклонил операцию на этапе «"
+              + moveStage
+              + "». Опубликуйте актуальный файл firestore.rules "
+              + "из комплекта Team_poker и повторите перенос. "
+              + "Исходная задача не удалена.",
+            "error"
+          );
+
+          console.error(
+            "Перенос отклонён Firestore Rules",
+            {
+              moveStage,
+              teamId: sourceTeamId,
+              sourceSessionId,
+              targetSessionId,
+              issueId,
+              role: currentRole(),
+              error
+            }
+          );
+        } else {
+          handleError(error, messageTarget);
+        }
 
         // До финального commit исходная задача не удаляется.
         // Незавершённую скрытую копию стараемся удалить.
