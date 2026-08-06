@@ -13,9 +13,17 @@ const integrationConfig =
 
 const POLL_INTERVAL_MS = 1200;
 const RETRY_DELAY_MS = 30000;
+const STATUS_POLL_INTERVAL_MS = Math.max(
+  5000,
+  Number(integrationConfig.statusPollIntervalMs) || 15000
+);
+const STATUS_BATCH_SIZE = 100;
 
 let currentUser = null;
 let pollTimer = null;
+let statusPollTimer = null;
+let statusInFlight = false;
+let statusRefreshTimer = null;
 let inFlightKey = null;
 let retryAfterByKey = new Map();
 
@@ -116,6 +124,57 @@ function configuredEndpoint() {
   }
 
   return endpoint;
+}
+
+function configuredStatusEndpoint() {
+  const explicit = String(
+    integrationConfig.statusEndpoint || ""
+  ).trim();
+
+  if (explicit && !explicit.includes("REPLACE_")) {
+    return explicit;
+  }
+
+  const syncEndpoint = configuredEndpoint();
+  if (!syncEndpoint) return null;
+
+  try {
+    const url = new URL(syncEndpoint);
+    url.pathname = "/task-statuses";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return syncEndpoint.replace(/\/sync\/?$/, "/task-statuses");
+  }
+}
+
+function deliveryStatusDescriptors() {
+  const api = window.TeamPokerIntegration;
+
+  if (
+    !api
+    || typeof api.getDeliveryStatusDescriptors !== "function"
+  ) {
+    return [];
+  }
+
+  const descriptors = api.getDeliveryStatusDescriptors();
+
+  return Array.isArray(descriptors)
+    ? descriptors.filter(item => item?.issueId && item?.taskId)
+    : [];
+}
+
+function applyDeliveryStatuses(items, meta = {}) {
+  const api = window.TeamPokerIntegration;
+
+  if (
+    api
+    && typeof api.setDeliveryStatuses === "function"
+  ) {
+    api.setDeliveryStatuses(items, meta);
+  }
 }
 
 function currentPayload() {
@@ -308,6 +367,8 @@ function renderCurrentState() {
           }.`,
       "ok"
     );
+
+    scheduleDeliveryStatusRefresh(700);
     return;
   }
 
@@ -452,6 +513,118 @@ async function sendPayload(payload) {
   }
 }
 
+async function requestDeliveryStatusChunk(
+  endpoint,
+  token,
+  tasks
+) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({ tasks })
+  });
+
+  const result = await response
+    .json()
+    .catch(() => ({}));
+
+  if (!response.ok || result.ok !== true) {
+    throw new Error(
+      result.error || `HTTP ${response.status}`
+    );
+  }
+
+  return Array.isArray(result.statuses)
+    ? result.statuses
+    : [];
+}
+
+async function syncDeliveryStatuses({ force = false } = {}) {
+  const endpoint = configuredStatusEndpoint();
+  const descriptors = deliveryStatusDescriptors();
+
+  if (!currentUser || !endpoint) {
+    applyDeliveryStatuses([], {
+      state: "idle",
+      syncedAt: null,
+      error: null
+    });
+    return;
+  }
+
+  if (!descriptors.length) {
+    applyDeliveryStatuses([], {
+      state: "ok",
+      syncedAt: new Date().toISOString(),
+      error: null
+    });
+    return;
+  }
+
+  if (statusInFlight && !force) return;
+  if (statusInFlight) return;
+
+  statusInFlight = true;
+
+  try {
+    const token = await currentUser.getIdToken();
+    const statuses = [];
+
+    for (
+      let start = 0;
+      start < descriptors.length;
+      start += STATUS_BATCH_SIZE
+    ) {
+      const chunk = descriptors.slice(
+        start,
+        start + STATUS_BATCH_SIZE
+      );
+
+      statuses.push(
+        ...await requestDeliveryStatusChunk(
+          endpoint,
+          token,
+          chunk
+        )
+      );
+    }
+
+    applyDeliveryStatuses(statuses, {
+      state: "ok",
+      syncedAt: new Date().toISOString(),
+      error: null
+    });
+  } catch (error) {
+    console.error(
+      "Ошибка Team_calculator → Team_poker",
+      error
+    );
+
+    /*
+      Старые успешно полученные значения не стираем: приложение
+      продолжает показывать последний известный статус.
+    */
+    // Последний успешно полученный набор остаётся в app.js.
+    // В консоль пишем ошибку, следующая попытка будет по таймеру.
+  } finally {
+    statusInFlight = false;
+  }
+}
+
+function scheduleDeliveryStatusRefresh(delay = 250) {
+  if (statusRefreshTimer) {
+    clearTimeout(statusRefreshTimer);
+  }
+
+  statusRefreshTimer = window.setTimeout(
+    () => syncDeliveryStatuses({ force: true }),
+    delay
+  );
+}
+
 async function checkAndSync() {
   renderCurrentState();
 
@@ -494,11 +667,20 @@ async function start() {
     onAuthStateChanged(auth, user => {
       currentUser = user || null;
       checkAndSync();
+      scheduleDeliveryStatusRefresh(100);
     });
 
     window.addEventListener(
       "hashchange",
-      () => setTimeout(checkAndSync, 300)
+      () => {
+        setTimeout(checkAndSync, 300);
+        scheduleDeliveryStatusRefresh(350);
+      }
+    );
+
+    window.addEventListener(
+      "team-poker:issues-changed",
+      () => scheduleDeliveryStatusRefresh(200)
     );
 
     const finalizeButton =
@@ -516,17 +698,29 @@ async function start() {
       POLL_INTERVAL_MS
     );
 
+    statusPollTimer = window.setInterval(
+      syncDeliveryStatuses,
+      STATUS_POLL_INTERVAL_MS
+    );
+
     window.addEventListener(
       "beforeunload",
       () => {
         if (pollTimer) {
           clearInterval(pollTimer);
         }
+        if (statusPollTimer) {
+          clearInterval(statusPollTimer);
+        }
+        if (statusRefreshTimer) {
+          clearTimeout(statusRefreshTimer);
+        }
       },
       { once: true }
     );
 
     checkAndSync();
+    syncDeliveryStatuses({ force: true });
   } catch (error) {
     console.error(error);
     setStatus(
