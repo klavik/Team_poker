@@ -84,6 +84,18 @@ let resolvingMovedLink = false;
 let pendingCreatedIssueId = null;
 
 /*
+  Статусы исполнения приходят только из Team_calculator.
+  Team_poker не подключается к GitLab и не создаёт второй контур
+  синхронизации. Ключ карты — issueId текущей сессии Team_poker.
+*/
+const calculatorDeliveryStatusByIssueId = new Map();
+let calculatorDeliverySyncMeta = {
+  state: "idle",
+  syncedAt: null,
+  error: null
+};
+
+/*
   Кэш нужен только на время работы страницы. Он позволяет не перечитывать
   задачи одной и той же сессии при каждом переключении между сессиями.
 */
@@ -1119,6 +1131,7 @@ function selectTeam(teamId) {
   gitlabHistoryRequestId += 1;
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
+  clearCalculatorDeliveryStatuses();
 
   state.teamId = teamId || null;
   state.members = [];
@@ -1149,6 +1162,7 @@ function resetTeamDependentState() {
   gitlabHistoryRequestId += 1;
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
+  clearCalculatorDeliveryStatuses();
 
   state.teamId = null;
   state.members = [];
@@ -1844,6 +1858,7 @@ function selectSession(sessionId) {
   clearIssueListener();
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
+  clearCalculatorDeliveryStatuses();
 
   state.sessionId = sessionId || null;
   state.issues = [];
@@ -2616,6 +2631,7 @@ function startIssuesListener() {
       state.issue = state.issues.find(issue => issue.id === nextIssueId) || null;
 
       renderIssues();
+      notifyCalculatorIssuesChanged();
 
       if (
         createdIssueId
@@ -2669,6 +2685,233 @@ function startIssuesListener() {
       syncCurrentTaskLink();
     },
     error => handleError(error)
+  );
+}
+
+function clearCalculatorDeliveryStatuses() {
+  calculatorDeliveryStatusByIssueId.clear();
+  calculatorDeliverySyncMeta = {
+    state: "idle",
+    syncedAt: null,
+    error: null
+  };
+}
+
+function calculatorDeliveryStatus(issue) {
+  if (!issue?.id) return null;
+  return calculatorDeliveryStatusByIssueId.get(issue.id) || null;
+}
+
+function calculatorStatusDateLabel(value) {
+  if (!value) return "";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function calculatorDeliveryToneClass(value) {
+  const tone = String(value || "neutral").trim();
+  return ["neutral", "info", "success", "warning", "purple"]
+    .includes(tone)
+      ? `tone-${tone}`
+      : "tone-neutral";
+}
+
+function calculatorDeliveryTooltip(status) {
+  if (!status?.delivery) return "";
+
+  const delivery = status.delivery;
+  const parts = [
+    delivery.label || "Статус Team_calculator",
+    "Источник: Team_calculator"
+  ];
+
+  if (delivery.plannedSprintName) {
+    parts.push(`Спринт: ${delivery.plannedSprintName}`);
+  }
+
+  const updated = calculatorStatusDateLabel(
+    delivery.updatedAt || status.syncedAt
+  );
+
+  if (updated) {
+    parts.push(`Обновлено: ${updated}`);
+  }
+
+  return parts.join(". ");
+}
+
+function calculatorDeliveryBadgeHtml(
+  issue,
+  { compact = false } = {}
+) {
+  const status = calculatorDeliveryStatus(issue);
+  const delivery = status?.delivery;
+
+  if (!delivery?.label) return "";
+
+  /*
+    Локальная отметка переоценки уже видна рядом с задачей.
+    Не дублируем её второй такой же плашкой.
+  */
+  if (
+    delivery.code === "reestimate_required"
+    && issue?.reestimateRequired === true
+  ) {
+    return "";
+  }
+
+  return `
+    <span
+      class="calculator-delivery-badge ${calculatorDeliveryToneClass(
+        delivery.tone
+      )} ${compact ? "compact" : ""}"
+      title="${escapeHtml(calculatorDeliveryTooltip(status))}"
+    >
+      <span aria-hidden="true">${escapeHtml(delivery.icon || "●")}</span>
+      ${escapeHtml(delivery.label)}
+    </span>
+  `;
+}
+
+function calculatorGitLabTooltip(status) {
+  const gitlab = status?.gitlab;
+  if (!gitlab) return "";
+
+  const parts = [
+    "Данные GitLab получены через Team_calculator",
+    gitlab.issueState
+      ? `Issue: ${gitlab.issueState}`
+      : "",
+    gitlab.statusLabel
+      ? `Статус: ${gitlab.statusLabel}`
+      : "",
+    Array.isArray(gitlab.auxiliaryStatusLabels)
+      && gitlab.auxiliaryStatusLabels.length
+        ? `Дополнительно: ${gitlab.auxiliaryStatusLabels.join(", ")}`
+        : "",
+    gitlab.iterationTitle
+      ? `Iteration: ${gitlab.iterationTitle}`
+      : "",
+    gitlab.syncedAt
+      ? `Обновлено: ${calculatorStatusDateLabel(gitlab.syncedAt)}`
+      : "",
+    gitlab.syncError
+      ? `Ошибка последней попытки: ${gitlab.syncError}`
+      : ""
+  ].filter(Boolean);
+
+  return parts.join(". ");
+}
+
+function calculatorGitLabBadgeHtml(
+  issue,
+  { compact = false } = {}
+) {
+  const status = calculatorDeliveryStatus(issue);
+  const gitlab = status?.gitlab;
+
+  if (!gitlab) return "";
+
+  const label = gitlab.statusLabel
+    || (
+      gitlab.issueState === "closed"
+        ? "Closed"
+        : gitlab.issueState === "opened"
+          ? "Open"
+          : "GitLab"
+    );
+
+  const tone = gitlab.issueState === "closed"
+    ? "success"
+    : gitlab.syncError
+      ? "warning"
+      : "neutral";
+
+  return `
+    <span
+      class="calculator-gitlab-badge ${calculatorDeliveryToneClass(
+        tone
+      )} ${compact ? "compact" : ""}"
+      title="${escapeHtml(calculatorGitLabTooltip(status))}"
+    >
+      GitLab · ${escapeHtml(label)}
+    </span>
+  `;
+}
+
+function applyCalculatorDeliveryStatuses(
+  items,
+  meta = {}
+) {
+  const next = new Map();
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const issueId = String(item?.issueId || "").trim();
+
+    if (!issueId || item?.found !== true) continue;
+
+    next.set(issueId, item);
+  }
+
+  const previousFingerprint = JSON.stringify(
+    [...calculatorDeliveryStatusByIssueId.entries()]
+  );
+
+  const nextFingerprint = JSON.stringify(
+    [...next.entries()]
+  );
+
+  calculatorDeliveryStatusByIssueId.clear();
+  for (const [issueId, item] of next.entries()) {
+    calculatorDeliveryStatusByIssueId.set(issueId, item);
+  }
+
+  calculatorDeliverySyncMeta = {
+    state: String(meta.state || "ok"),
+    syncedAt: meta.syncedAt || new Date().toISOString(),
+    error: meta.error || null
+  };
+
+  if (previousFingerprint !== nextFingerprint) {
+    renderIssues();
+    if (state.issue) renderIssue();
+  }
+}
+
+function calculatorDeliveryStatusDescriptors() {
+  return state.issues
+    .filter(issue =>
+      issue
+      && isValidDevelopmentArea(issue.estimatedRole)
+      && (
+        issue.finalEstimate != null
+        || issue.status === "estimated"
+        || issue.reestimateRequired === true
+      )
+    )
+    .map(issue => ({
+      issueId: issue.id,
+      taskId: issue.id,
+      title: issue.title || "",
+      externalTaskUrl: issue.gitlabUrl || null,
+      estimatedRole: issue.estimatedRole,
+      teamId: state.teamId,
+      sessionId: state.sessionId
+    }));
+}
+
+function notifyCalculatorIssuesChanged() {
+  window.dispatchEvent(
+    new CustomEvent("team-poker:issues-changed")
   );
 }
 
@@ -3040,6 +3283,11 @@ function issueListItemHtml(issue) {
         `
       : "";
 
+  const calculatorStatusBadges = [
+    calculatorDeliveryBadgeHtml(issue, { compact: true }),
+    calculatorGitLabBadgeHtml(issue, { compact: true })
+  ].filter(Boolean).join("");
+
   const selectableForVoting =
     canManageEstimation()
     && issue.status === "pending";
@@ -3088,11 +3336,18 @@ function issueListItemHtml(issue) {
             ${issueBadges}
           </div>
 
-          <div class="item-meta">
-            ${escapeHtml(issueDisplayStatusText(issue))}
+          <div class="item-meta-row">
+            <div class="item-meta">
+              ${escapeHtml(issueDisplayStatusText(issue))}
+              ${
+                issue.finalEstimate
+                  ? ` · ${issue.finalEstimate} ч.д.`
+                  : ""
+              }
+            </div>
             ${
-              issue.finalEstimate
-                ? ` · ${issue.finalEstimate} ч.д.`
+              calculatorStatusBadges
+                ? `<div class="calculator-status-badges">${calculatorStatusBadges}</div>`
                 : ""
             }
           </div>
@@ -3923,6 +4178,8 @@ function renderIssue() {
     <span class="area-badge compact ${developmentAreaClass(estimateDirection)}">
       ${escapeHtml(developmentAreaLabel(estimateDirection))}
     </span>
+    ${calculatorDeliveryBadgeHtml(issue)}
+    ${calculatorGitLabBadgeHtml(issue)}
   `;
 
   $("issueTitle").textContent = issue.title;
@@ -5534,7 +5791,17 @@ window.TeamPokerIntegration = {
     buildTeamCalendarEstimatePayload(),
 
   getCurrentGitLabJobDescriptor: () =>
-    currentGitLabJobDescriptor()
+    currentGitLabJobDescriptor(),
+
+  getDeliveryStatusDescriptors: () =>
+    calculatorDeliveryStatusDescriptors(),
+
+  setDeliveryStatuses: (items, meta) =>
+    applyCalculatorDeliveryStatuses(items, meta),
+
+  getDeliveryStatusSyncMeta: () => ({
+    ...calculatorDeliverySyncMeta
+  })
 };
 
 async function copyEstimate() {

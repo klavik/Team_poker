@@ -1,0 +1,13 @@
+Team_poker delivery status sync validation
+===========================================
+Source: team_poker_reestimate_after_move_full
+app.js syntax: OK
+calculator-integration-status.js syntax: OK
+Status source: Team_calculator only
+Direct GitLab requests from Team_poker: none added
+Batch status polling interval: 15 seconds
+Current session refresh event: OK
+Delivery badges in list and task card: OK
+GitLab metadata badges sourced through Team_calculator: OK
+Firestore Rules: unchanged
+Required Team_calculator release: v23.4.28

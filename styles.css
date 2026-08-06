@@ -1195,3 +1195,103 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
     width: 100%;
   }
 }
+
+
+/* Team_calculator -> Team_poker delivery status sync */
+.item-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.item-meta-row .item-meta {
+  margin-top: 0;
+}
+
+.calculator-status-badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.calculator-delivery-badge,
+.calculator-gitlab-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #d7dce5;
+  border-radius: 999px;
+  background: #f4f6f9;
+  color: #4d5768;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calculator-delivery-badge.compact,
+.calculator-gitlab-badge.compact {
+  padding: 3px 7px;
+  font-size: 10px;
+}
+
+.calculator-delivery-badge.tone-info,
+.calculator-gitlab-badge.tone-info {
+  border-color: #9fc0f5;
+  background: #eef5ff;
+  color: #174ea6;
+}
+
+.calculator-delivery-badge.tone-success,
+.calculator-gitlab-badge.tone-success {
+  border-color: #a9d7b6;
+  background: #eef9f1;
+  color: #137333;
+}
+
+.calculator-delivery-badge.tone-warning,
+.calculator-gitlab-badge.tone-warning {
+  border-color: #e3aa35;
+  background: #fff5d9;
+  color: #805000;
+}
+
+.calculator-delivery-badge.tone-purple,
+.calculator-gitlab-badge.tone-purple {
+  border-color: #b7a5e8;
+  background: #f3efff;
+  color: #55349a;
+}
+
+.calculator-delivery-badge.tone-neutral,
+.calculator-gitlab-badge.tone-neutral {
+  border-color: #d7dce5;
+  background: #f4f6f9;
+  color: #4d5768;
+}
+
+#issueStatus .calculator-delivery-badge,
+#issueStatus .calculator-gitlab-badge {
+  max-width: min(360px, 100%);
+}
+
+@media (max-width: 620px) {
+  .item-meta-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .calculator-status-badges {
+    justify-content: flex-start;
+  }
+}
