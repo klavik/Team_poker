@@ -2691,7 +2691,12 @@ function startIssuesListener() {
       state.issueId = nextIssueId;
       state.issue = state.issues.find(issue => issue.id === nextIssueId) || null;
 
-      renderIssues();
+      try {
+        renderIssues();
+      } catch (renderError) {
+        renderIssuesFallback(renderError);
+      }
+
       notifyCalculatorIssuesChanged();
 
       if (
@@ -2745,7 +2750,27 @@ function startIssuesListener() {
 
       syncCurrentTaskLink();
     },
-    error => handleError(error)
+    error => {
+      console.error(
+        "Ошибка чтения задач текущей сессии из Firestore",
+        error
+      );
+
+      const root = $("issueList");
+
+      if (root) {
+        root.innerHTML = `
+          <div class="message error">
+            Не удалось загрузить задачи из Firestore:
+            ${escapeHtml(
+              error?.message || String(error)
+            )}
+          </div>
+        `;
+      }
+
+      handleError(error);
+    }
   );
 }
 
@@ -3431,8 +3456,21 @@ function issueListItemHtml(issue) {
     calculatorGitLabBadgeHtml(issue, { compact: true })
   ].filter(Boolean).join("");
 
-  const selectableForBulk =
-    issueSelectableForBulkActions(issue);
+  let selectableForBulk = false;
+
+  try {
+    selectableForBulk = Boolean(
+      canManageEstimation()
+      && issue
+      && issue.moveState !== "copying"
+      && issue.status !== "voting"
+    );
+  } catch (error) {
+    console.error(
+      "Не удалось определить доступность массовых действий",
+      error
+    );
+  }
 
   const selectedForBulk =
     selectableForBulk
@@ -3579,8 +3617,11 @@ function renderIssues() {
   const root = $("issueList");
 
   renderTaskStatusesRefreshButton();
-  pruneVotingIssueSelection();
 
+  /*
+    Основной список задач не должен зависеть от вторичных
+    массовых действий. Сначала всегда отображаем задачи.
+  */
   if (!state.issues.length) {
     root.innerHTML =
       '<div class="empty-state">Нет задач</div>';
@@ -3667,7 +3708,19 @@ function renderIssues() {
     );
   });
 
-  renderBulkVotingControls();
+  try {
+    renderBulkVotingControls();
+  } catch (error) {
+    console.error(
+      "Ошибка панели массовых действий. Список задач продолжает работать.",
+      error
+    );
+
+    const controls = $("bulkVotingControls");
+    if (controls) {
+      controls.classList.add("hidden");
+    }
+  }
 
   root.querySelectorAll("[data-issue-id]").forEach(item => {
     item.addEventListener(
@@ -3687,6 +3740,99 @@ function renderIssues() {
 
         selectIssue(item.dataset.issueId);
       }
+    );
+  });
+}
+
+function renderIssuesFallback(error) {
+  const root = $("issueList");
+
+  console.error(
+    "Основной renderer списка задач завершился ошибкой. Используется безопасный режим.",
+    error
+  );
+
+  if (!root) return;
+
+  if (!state.issues.length) {
+    root.innerHTML =
+      '<div class="empty-state">В этой сессии нет задач.</div>';
+    return;
+  }
+
+  const activeIssues = state.issues.filter(
+    issue => issue.status !== "estimated"
+  );
+
+  const estimatedIssues = state.issues.filter(
+    issue => issue.status === "estimated"
+  );
+
+  const simpleGroup = (title, issues) => {
+    if (!issues.length) return "";
+
+    return `
+      <section class="issue-list-group">
+        <div class="issue-list-group-title">
+          <div class="issue-list-group-heading">
+            <span>${escapeHtml(title)}</span>
+            <span class="issue-list-group-count">
+              ${issues.length}
+            </span>
+          </div>
+        </div>
+
+        <div class="issue-list-group-items">
+          ${issues.map(issue => `
+            <div
+              class="item ${
+                issue.id === state.issueId
+                  ? "active"
+                  : ""
+              }"
+              data-issue-id="${escapeHtml(issue.id)}"
+            >
+              <div class="item-body">
+                <div class="item-title">
+                  ${escapeHtml(
+                    issue.title || "Задача без названия"
+                  )}
+                </div>
+                <div class="item-meta">
+                  ${escapeHtml(
+                    issueDisplayStatusText(issue)
+                  )}
+                  ${
+                    issue.finalEstimate
+                      ? ` · ${escapeHtml(issue.finalEstimate)} ч.д.`
+                      : ""
+                  }
+                </div>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  };
+
+  root.innerHTML = `
+    <div class="message warning">
+      Задачи загружены, но часть дополнительных элементов интерфейса
+      временно не отрисовалась. Основной список доступен.
+    </div>
+    ${simpleGroup("Активные", activeIssues)}
+    ${simpleGroup("Оценённые", estimatedIssues)}
+  `;
+
+  root.querySelectorAll(
+    "[data-issue-id]"
+  ).forEach(item => {
+    item.addEventListener(
+      "click",
+      () => selectIssue(
+        item.dataset.issueId
+      )
     );
   });
 }
