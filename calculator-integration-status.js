@@ -8,24 +8,27 @@ import {
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 
+import {
+  getFirestore,
+  collection,
+  onSnapshot
+} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+
 const integrationConfig =
   window.TEAM_CALCULATOR_INTEGRATION || {};
 
 const POLL_INTERVAL_MS = 1200;
 const RETRY_DELAY_MS = 30000;
-const STATUS_POLL_INTERVAL_MS = Math.max(
-  5000,
-  Number(integrationConfig.statusPollIntervalMs) || 15000
-);
-const STATUS_BATCH_SIZE = 100;
-
 let currentUser = null;
 let pollTimer = null;
-let statusPollTimer = null;
-let statusInFlight = false;
 let statusRefreshTimer = null;
 let inFlightKey = null;
 let retryAfterByKey = new Map();
+
+let deliveryStatusDb = null;
+let deliveryStatusUnsubscribe = null;
+let deliveryStatusTeamId = null;
+const deliveryStatusSnapshotByIssueId = new Map();
 
 function integrationStyle() {
   if (document.getElementById("teamCalculatorIntegrationStyle")) {
@@ -126,28 +129,29 @@ function configuredEndpoint() {
   return endpoint;
 }
 
-function configuredStatusEndpoint() {
-  const explicit = String(
-    integrationConfig.statusEndpoint || ""
+function configuredStatusCollection() {
+  const value = String(
+    integrationConfig.statusCollection
+    || "delivery_status"
   ).trim();
 
-  if (explicit && !explicit.includes("REPLACE_")) {
-    return explicit;
-  }
-
-  const syncEndpoint = configuredEndpoint();
-  if (!syncEndpoint) return null;
-
-  try {
-    const url = new URL(syncEndpoint);
-    url.pathname = "/task-statuses";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return syncEndpoint.replace(/\/sync\/?$/, "/task-statuses");
-  }
+  return value || "delivery_status";
 }
+
+function stopDeliveryStatusSubscription() {
+  if (deliveryStatusUnsubscribe) {
+    try {
+      deliveryStatusUnsubscribe();
+    } catch {
+      // Best-effort cleanup.
+    }
+  }
+
+  deliveryStatusUnsubscribe = null;
+  deliveryStatusTeamId = null;
+  deliveryStatusSnapshotByIssueId.clear();
+}
+
 
 function deliveryStatusDescriptors() {
   const api = window.TeamPokerIntegration;
@@ -513,106 +517,170 @@ async function sendPayload(payload) {
   }
 }
 
-async function requestDeliveryStatusChunk(
-  endpoint,
-  token,
-  tasks
-) {
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
-    },
-    body: JSON.stringify({ tasks })
-  });
-
-  const result = await response
-    .json()
-    .catch(() => ({}));
-
-  if (!response.ok || result.ok !== true) {
-    throw new Error(
-      result.error || `HTTP ${response.status}`
-    );
-  }
-
-  return Array.isArray(result.statuses)
-    ? result.statuses
-    : [];
-}
-
-async function syncDeliveryStatuses({ force = false } = {}) {
-  const endpoint = configuredStatusEndpoint();
+function renderDeliveryStatusSnapshot() {
   const descriptors = deliveryStatusDescriptors();
-
-  if (!currentUser || !endpoint) {
-    applyDeliveryStatuses([], {
-      state: "idle",
-      syncedAt: null,
-      error: null
-    });
-    return;
-  }
 
   if (!descriptors.length) {
     applyDeliveryStatuses([], {
       state: "ok",
       syncedAt: new Date().toISOString(),
-      error: null
+      error: null,
+      transport: "firestore"
     });
     return;
   }
 
-  if (statusInFlight && !force) return;
-  if (statusInFlight) return;
+  const descriptorByIssueId = new Map(
+    descriptors.map(item => [
+      String(item.issueId || "").trim(),
+      item
+    ])
+  );
 
-  statusInFlight = true;
+  const statuses = [];
 
-  try {
-    const token = await currentUser.getIdToken();
-    const statuses = [];
+  for (
+    const [issueId, item]
+    of deliveryStatusSnapshotByIssueId.entries()
+  ) {
+    const descriptor =
+      descriptorByIssueId.get(issueId);
 
-    for (
-      let start = 0;
-      start < descriptors.length;
-      start += STATUS_BATCH_SIZE
+    if (
+      !descriptor
+      || item?.found !== true
     ) {
-      const chunk = descriptors.slice(
-        start,
-        start + STATUS_BATCH_SIZE
-      );
-
-      statuses.push(
-        ...await requestDeliveryStatusChunk(
-          endpoint,
-          token,
-          chunk
-        )
-      );
+      continue;
     }
 
-    applyDeliveryStatuses(statuses, {
+    const mirroredRole = String(
+      item?.estimatedRole || ""
+    ).trim();
+
+    if (
+      mirroredRole
+      && mirroredRole !== descriptor.estimatedRole
+    ) {
+      continue;
+    }
+
+    statuses.push({
+      ...item,
+      issueId
+    });
+  }
+
+  applyDeliveryStatuses(statuses, {
+    state: "ok",
+    syncedAt: new Date().toISOString(),
+    error: null,
+    transport: "firestore"
+  });
+}
+
+function syncDeliveryStatuses() {
+  const descriptors = deliveryStatusDescriptors();
+
+  if (!currentUser) {
+    stopDeliveryStatusSubscription();
+
+    applyDeliveryStatuses([], {
+      state: "idle",
+      syncedAt: null,
+      error: null,
+      transport: "firestore"
+    });
+
+    return;
+  }
+
+  const teamId = String(
+    descriptors[0]?.teamId || ""
+  ).trim();
+
+  if (!teamId) {
+    stopDeliveryStatusSubscription();
+
+    applyDeliveryStatuses([], {
       state: "ok",
       syncedAt: new Date().toISOString(),
-      error: null
+      error: null,
+      transport: "firestore"
     });
-  } catch (error) {
-    console.error(
-      "Ошибка Team_calculator → Team_poker",
-      error
+
+    return;
+  }
+
+  if (
+    deliveryStatusUnsubscribe
+    && deliveryStatusTeamId === teamId
+  ) {
+    renderDeliveryStatusSnapshot();
+    return;
+  }
+
+  stopDeliveryStatusSubscription();
+
+  try {
+    const app = getApp();
+
+    deliveryStatusDb =
+      deliveryStatusDb || getFirestore(app);
+
+    const statusRef = collection(
+      deliveryStatusDb,
+      "teams",
+      teamId,
+      configuredStatusCollection()
     );
 
-    /*
-      Старые успешно полученные значения не стираем: приложение
-      продолжает показывать последний известный статус.
-    */
-    // Последний успешно полученный набор остаётся в app.js.
-    // В консоль пишем ошибку, следующая попытка будет по таймеру.
-  } finally {
-    statusInFlight = false;
+    deliveryStatusTeamId = teamId;
+
+    deliveryStatusUnsubscribe = onSnapshot(
+      statusRef,
+      snapshot => {
+        deliveryStatusSnapshotByIssueId.clear();
+
+        for (const docSnapshot of snapshot.docs) {
+          const data = docSnapshot.data() || {};
+          const issueId = String(
+            data.issueId || docSnapshot.id
+          ).trim();
+
+          if (!issueId) continue;
+
+          deliveryStatusSnapshotByIssueId.set(
+            issueId,
+            {
+              ...data,
+              issueId
+            }
+          );
+        }
+
+        renderDeliveryStatusSnapshot();
+      },
+      error => {
+        console.error(
+          "Ошибка чтения статусов Team_calculator из Firestore Team_poker",
+          error
+        );
+
+        /*
+          Последнее успешно полученное состояние не стираем.
+          Firestore listener сам переподключится после
+          восстановления соединения.
+        */
+      }
+    );
+  } catch (error) {
+    console.error(
+      "Не удалось запустить realtime-статусы Team_calculator",
+      error
+    );
   }
 }
+
 
 function scheduleDeliveryStatusRefresh(delay = 250) {
   if (statusRefreshTimer) {
@@ -680,7 +748,10 @@ async function start() {
 
     window.addEventListener(
       "team-poker:issues-changed",
-      () => scheduleDeliveryStatusRefresh(200)
+      () => {
+        renderDeliveryStatusSnapshot();
+        scheduleDeliveryStatusRefresh(200);
+      }
     );
 
     const finalizeButton =
@@ -698,23 +769,16 @@ async function start() {
       POLL_INTERVAL_MS
     );
 
-    statusPollTimer = window.setInterval(
-      syncDeliveryStatuses,
-      STATUS_POLL_INTERVAL_MS
-    );
-
     window.addEventListener(
       "beforeunload",
       () => {
         if (pollTimer) {
           clearInterval(pollTimer);
         }
-        if (statusPollTimer) {
-          clearInterval(statusPollTimer);
-        }
         if (statusRefreshTimer) {
           clearTimeout(statusRefreshTimer);
         }
+        stopDeliveryStatusSubscription();
       },
       { once: true }
     );
