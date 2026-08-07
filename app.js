@@ -3358,6 +3358,71 @@ async function startSelectedVoting() {
   finally { bulkVotingInProgress=false; renderIssues(); }
 }
 
+function issueTransferInfo(
+  issue = state.issue,
+  context = null
+) {
+  if (!issue || !issue.movedFromSessionId) {
+    return null;
+  }
+
+  const targetSessionId = String(
+    context?.sessionId
+    || state.sessionId
+    || ""
+  );
+
+  const targetSessionName = String(
+    context?.sessionName
+    || (
+      targetSessionId === state.sessionId
+        ? currentSession()?.name
+        : ""
+    )
+    || ""
+  );
+
+  return {
+    isTransferred: true,
+    fromSessionId: String(
+      issue.movedFromSessionId || ""
+    ),
+    fromSessionName: String(
+      issue.movedFromSessionName || ""
+    ),
+    toSessionId: targetSessionId,
+    toSessionName: targetSessionName,
+    movedAt: timestampToIso(issue.movedAt),
+    movedAtLabel: formatHistoryDate(issue.movedAt),
+    movedBy: {
+      uid: issue.movedByUid || null,
+      email: issue.movedByEmail || null,
+      displayName:
+        issue.movedByDisplayName || null
+    }
+  };
+}
+
+function issueTransferTooltip(issue) {
+  const transfer = issueTransferInfo(issue);
+
+  if (!transfer) return "";
+
+  const details = [
+    transfer.fromSessionName
+      ? `Из сессии «${transfer.fromSessionName}»`
+      : "Перенесена из другой сессии",
+    transfer.toSessionName
+      ? `в сессию «${transfer.toSessionName}»`
+      : "",
+    transfer.movedAtLabel
+      ? `Дата переноса: ${transfer.movedAtLabel}`
+      : ""
+  ].filter(Boolean);
+
+  return details.join(". ");
+}
+
 function issueListItemHtml(issue) {
   const previousOccurrences =
     priorGitlabOccurrences(issue);
