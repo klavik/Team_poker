@@ -30,7 +30,6 @@
 
     <div id="userBox" class="user-box hidden">
       <span id="userEmail" class="user-email"></span>
-      <button id="syncBtn" class="button secondary compact" type="button">Синхронизировать</button>
       <button id="changePasswordBtn" class="button secondary compact" type="button">Сменить пароль</button>
       <button id="logoutBtn" class="button secondary compact" type="button">Выйти</button>
     </div>
@@ -125,14 +124,6 @@
               Обновить статусы
             </button>
             <button
-              id="openBulkMoveIssueDialogBtn"
-              class="button secondary compact"
-              type="button"
-              title="Перенести несколько задач в другую сессию"
-            >
-              Массовый перенос
-            </button>
-            <button
               id="openIssueAuditBtn"
               class="button secondary compact"
               type="button"
@@ -157,7 +148,7 @@
             class="button secondary compact"
             type="button"
           >
-            Выбрать все
+            Выбрать все видимые
           </button>
 
           <span
@@ -165,14 +156,32 @@
             class="bulk-voting-count"
           ></span>
 
-          <button
-            id="startSelectedVotingBtn"
-            class="button primary compact"
-            type="button"
-            disabled
-          >
-            Начать голосование
-          </button>
+          <div class="bulk-task-actions">
+            <button
+              id="startSelectedVotingBtn"
+              class="button primary compact"
+              type="button"
+              disabled
+            >
+              Начать голосование
+            </button>
+            <button
+              id="moveSelectedIssuesBtn"
+              class="button secondary compact"
+              type="button"
+              disabled
+            >
+              Перенести
+            </button>
+            <button
+              id="clearSelectedIssuesBtn"
+              class="button secondary compact"
+              type="button"
+              disabled
+            >
+              Снять выбор
+            </button>
+          </div>
         </div>
 
         <div
@@ -574,28 +583,13 @@
 
 
 <dialog id="bulkMoveIssueDialog">
-  <form method="dialog" class="dialog-card wide-dialog" onsubmit="return false">
+  <form method="dialog" class="dialog-card" onsubmit="return false">
     <div class="dialog-title-row">
       <div>
-        <h2>Массовый перенос задач</h2>
-        <p class="muted small">Перенос выполняется внутри текущей команды.</p>
+        <h2>Перенести выбранные задачи</h2>
+        <p id="bulkMoveSelectedSummary" class="muted small"></p>
       </div>
-      <button
-        class="button secondary icon-button"
-        type="button"
-        data-close-dialog="bulkMoveIssueDialog"
-      >×</button>
-    </div>
-
-    <div class="move-issue-summary">
-      <div>
-        <span>Текущая сессия</span>
-        <strong id="bulkMoveSourceSession"></strong>
-      </div>
-      <div>
-        <span>Выбрано задач</span>
-        <strong id="bulkMoveSelectedCount">0</strong>
-      </div>
+      <button class="button secondary icon-button" type="button" data-close-dialog="bulkMoveIssueDialog">×</button>
     </div>
 
     <label for="bulkMoveTargetSession">Перенести в сессию</label>
@@ -603,62 +597,21 @@
 
     <fieldset class="bulk-move-mode-fieldset">
       <legend>Режим переноса</legend>
-
       <label class="bulk-move-mode-option">
         <input type="radio" name="bulkMoveMode" value="reestimate" checked>
-        <span>
-          <strong>С переоценкой</strong>
-          <small>В новой сессии задача попадёт в список «На переоценку».</small>
-        </span>
+        <span><strong>С переоценкой</strong><small>Задачи попадут в новую сессию как «На переоценку».</small></span>
       </label>
-
       <label class="bulk-move-mode-option">
         <input type="radio" name="bulkMoveMode" value="reuse">
-        <span>
-          <strong>Без переоценки</strong>
-          <small>Используется последняя зафиксированная оценка.</small>
-        </span>
+        <span><strong>Сохранить последнюю оценку</strong><small>Используется последняя зафиксированная оценка.</small></span>
       </label>
     </fieldset>
 
-    <div class="bulk-move-selection-toolbar">
-      <button
-        id="bulkMoveSelectAllBtn"
-        class="button secondary compact"
-        type="button"
-      >
-        Выбрать все доступные
-      </button>
-
-      <span id="bulkMoveEligibilityHint" class="muted small"></span>
-    </div>
-
-    <div id="bulkMoveIssueList" class="bulk-move-issue-list"></div>
-
-    <div class="message info">
-      Сохраняются голоса и история раундов. Задачи в активном голосовании
-      переносить нельзя. В режиме без переоценки у задачи должна быть хотя
-      бы одна зафиксированная оценка.
-    </div>
-
+    <div id="bulkMoveEligibilityHint" class="message info"></div>
     <div class="actions">
-      <button
-        id="confirmBulkMoveIssueBtn"
-        class="button primary"
-        type="button"
-        disabled
-      >
-        Перенести
-      </button>
-      <button
-        class="button secondary"
-        type="button"
-        data-close-dialog="bulkMoveIssueDialog"
-      >
-        Отмена
-      </button>
+      <button id="confirmBulkMoveIssueBtn" class="button primary" type="button" disabled>Перенести</button>
+      <button class="button secondary" type="button" data-close-dialog="bulkMoveIssueDialog">Отмена</button>
     </div>
-
     <div id="bulkMoveIssueMessage" class="form-message"></div>
   </form>
 </dialog>

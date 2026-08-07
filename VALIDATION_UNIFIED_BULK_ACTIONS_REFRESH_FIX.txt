@@ -1,0 +1,11 @@
+Team_poker unified bulk actions validation
+==========================================
+app.js syntax: OK
+calculator-integration-status.js syntax: OK
+Sync button removed: OK
+Unified selection active+estimated: OK
+Compact move dialog: OK
+Reuse/reestimate modes retained: OK
+No auto navigation after bulk move: OK
+Refresh rules UID-based and email literal equality removed: OK
+metadata_connector v1.4.8 unchanged
