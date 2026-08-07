@@ -109,7 +109,6 @@ let gitlabHistoryRequestId = 0;
 const selectedVotingIssueIds = new Set();
 let bulkVotingInProgress = false;
 
-const selectedBulkMoveIssueIds = new Set();
 let bulkMoveInProgress = false;
 
 /*
@@ -586,7 +585,6 @@ async function init() {
 function bindEvents() {
   $("loginBtn").addEventListener("click", login);
   $("logoutBtn").addEventListener("click", logout);
-  $("syncBtn").addEventListener("click", synchronize);
 
   $("changePasswordBtn").addEventListener("click", openPasswordDialog);
   $("savePasswordBtn").addEventListener("click", changePassword);
@@ -614,13 +612,13 @@ function bindEvents() {
     "click",
     requestTaskStatusesRefresh
   );
-  $("openBulkMoveIssueDialogBtn").addEventListener(
+  $("moveSelectedIssuesBtn").addEventListener(
     "click",
     openBulkMoveIssueDialog
   );
-  $("bulkMoveSelectAllBtn").addEventListener(
+  $("clearSelectedIssuesBtn").addEventListener(
     "click",
-    toggleSelectAllBulkMoveIssues
+    clearSelectedIssues
   );
   $("confirmBulkMoveIssueBtn").addEventListener(
     "click",
@@ -1060,19 +1058,20 @@ async function logout() {
   }
 }
 
-async function synchronize(showSuccess = true) {
+async function synchronize(showSuccess = false) {
   if (!db) return;
 
-  await withButton($("syncBtn"), "Синхронизация...", async () => {
-    try {
-      await disableNetwork(db);
-      await enableNetwork(db);
-      hideConnectionProblem();
-      if (showSuccess) toast("Синхронизация запущена.", "success", 2500);
-    } catch (error) {
-      handleError(error);
+  try {
+    await disableNetwork(db);
+    await enableNetwork(db);
+    hideConnectionProblem();
+
+    if (showSuccess) {
+      toast("Соединение Firestore переподключено.", "success", 2500);
     }
-  });
+  } catch (error) {
+    handleError(error);
+  }
 }
 
 function resetState() {
@@ -1184,7 +1183,6 @@ function selectTeam(teamId) {
   gitlabHistoryRequestId += 1;
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
-  selectedBulkMoveIssueIds.clear();
   bulkMoveInProgress = false;
   clearDeliveryStatusRefreshListener();
   resetIssueGitLabStatusFilters();
@@ -1219,7 +1217,6 @@ function resetTeamDependentState() {
   gitlabHistoryRequestId += 1;
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
-  selectedBulkMoveIssueIds.clear();
   bulkMoveInProgress = false;
   clearDeliveryStatusRefreshListener();
   resetIssueGitLabStatusFilters();
@@ -1294,9 +1291,6 @@ function renderTeamControls() {
 
   $("openIssueDialogBtn").disabled =
     !canCreateIssue() || !state.sessionId;
-
-  $("openBulkMoveIssueDialogBtn").disabled =
-    !estimationManager || !state.sessionId;
 
   $("editSessionBtn").disabled =
     !estimationManager || !state.sessionId;
@@ -1922,7 +1916,6 @@ function selectSession(sessionId) {
   clearIssueListener();
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
-  selectedBulkMoveIssueIds.clear();
   bulkMoveInProgress = false;
   clearDeliveryStatusRefreshListener();
   resetIssueGitLabStatusFilters();
@@ -3116,6 +3109,12 @@ async function requestTaskStatusesRefresh() {
   } catch (error) {
     clearDeliveryStatusRefreshListener();
     renderTaskStatusesRefreshButton();
+    const permissionDenied=["permission-denied","firestore/permission-denied"].includes(error?.code);
+    if (permissionDenied) {
+      toast("Firestore не разрешил запрос обновления статусов. Опубликуйте firestore.rules из текущего релиза Team_poker.","error",7000);
+      console.error("delivery_status_refresh denied by Firestore Rules",error);
+      return;
+    }
     handleError(error);
   }
 }
@@ -3189,24 +3188,61 @@ function visibleActiveIssues() {
   return state.issues.filter(
     issue =>
       issue.status !== "estimated"
-      &&issueMatchesGitLabStatusFilter(
+      && issueMatchesGitLabStatusFilter(
         issue,
         issueGitLabStatusFilters.active
       )
   );
 }
 
-function votingSelectableIssues() {
-  if (!canManageEstimation()) return [];
+function visibleEstimatedIssues() {
+  return state.issues.filter(
+    issue =>
+      issue.status === "estimated"
+      && issueMatchesGitLabStatusFilter(
+        issue,
+        issueGitLabStatusFilters.estimated
+      )
+  );
+}
 
-  return visibleActiveIssues().filter(
+function issueSelectableForBulkActions(issue) {
+  return Boolean(
+    canManageEstimation()
+    && issue
+    && issue.moveState !== "copying"
+    && issue.status !== "voting"
+  );
+}
+
+function visibleBulkSelectableIssues() {
+  return [
+    ...visibleActiveIssues(),
+    ...visibleEstimatedIssues()
+  ].filter(issueSelectableForBulkActions);
+}
+
+function selectedIssues() {
+  return state.issues.filter(
+    issue => selectedVotingIssueIds.has(issue.id)
+  );
+}
+
+function selectedPendingIssues() {
+  return selectedIssues().filter(
     issue => issue.status === "pending"
+  );
+}
+
+function selectedTransferableIssues() {
+  return selectedIssues().filter(
+    issueSelectableForBulkActions
   );
 }
 
 function pruneVotingIssueSelection() {
   const selectableIds = new Set(
-    votingSelectableIssues().map(issue => issue.id)
+    visibleBulkSelectableIssues().map(issue => issue.id)
   );
 
   for (const issueId of selectedVotingIssueIds) {
@@ -3220,255 +3256,81 @@ function renderBulkVotingControls() {
   const controls = $("bulkVotingControls");
   const selectAllButton = $("selectAllVotingIssuesBtn");
   const startButton = $("startSelectedVotingBtn");
+  const moveButton = $("moveSelectedIssuesBtn");
+  const clearButton = $("clearSelectedIssuesBtn");
   const countElement = $("selectedVotingIssuesCount");
 
-  if (
-    !controls
-    || !selectAllButton
-    || !startButton
-    || !countElement
-  ) {
-    return;
-  }
+  if (!controls || !selectAllButton || !startButton || !moveButton || !clearButton || !countElement) return;
 
   pruneVotingIssueSelection();
 
-  const selectableIssues = votingSelectableIssues();
-  const selectedCount = selectedVotingIssueIds.size;
-  const allSelected =
-    selectableIssues.length > 0
-    && selectedCount === selectableIssues.length;
-
-  const visible =
-    canManageEstimation()
-    && Boolean(state.sessionId)
-    && selectableIssues.length > 0;
+  const selectableIssues = visibleBulkSelectableIssues();
+  const selected = selectedTransferableIssues();
+  const selectedCount = selected.length;
+  const pendingCount = selected.filter(issue => issue.status === "pending").length;
+  const allVisibleSelected = selectableIssues.length > 0 && selectableIssues.every(issue => selectedVotingIssueIds.has(issue.id));
+  const visible = canManageEstimation() && Boolean(state.sessionId) && selectableIssues.length > 0;
 
   show(controls, visible);
+  if (!visible) { countElement.textContent = ""; return; }
 
-  if (!visible) {
-    countElement.textContent = "";
-    return;
-  }
-
-  selectAllButton.textContent = allSelected
-    ? "Снять выбор"
-    : "Выбрать все";
-
-  selectAllButton.disabled = bulkVotingInProgress;
-
-  countElement.textContent =
-    `Выбрано: ${selectedCount} из ${selectableIssues.length}`;
-
-  startButton.textContent = selectedCount
-    ? `Начать голосование · ${selectedCount}`
-    : "Начать голосование";
-
-  startButton.disabled =
-    bulkVotingInProgress
-    || selectedCount === 0;
+  selectAllButton.textContent = allVisibleSelected ? "Снять выбор видимых" : "Выбрать все видимые";
+  selectAllButton.disabled = bulkVotingInProgress || bulkMoveInProgress || selectableIssues.length === 0;
+  countElement.textContent = selectedCount ? `Выбрано: ${selectedCount}` : `Доступно: ${selectableIssues.length}`;
+  startButton.textContent = pendingCount ? `Начать голосование · ${pendingCount}` : "Начать голосование";
+  startButton.disabled = bulkVotingInProgress || bulkMoveInProgress || pendingCount === 0;
+  moveButton.textContent = selectedCount ? `Перенести · ${selectedCount}` : "Перенести";
+  moveButton.disabled = bulkVotingInProgress || bulkMoveInProgress || selectedCount === 0;
+  clearButton.disabled = bulkVotingInProgress || bulkMoveInProgress || selectedCount === 0;
 }
 
-function toggleVotingIssueSelection(
-  issueId,
-  selected
-) {
-  const issue = state.issues.find(
-    item => item.id === issueId
-  );
-
-  if (
-    !canManageEstimation()
-    || issue?.status !== "pending"
-  ) {
+function toggleVotingIssueSelection(issueId, selected) {
+  const issue = state.issues.find(item => item.id === issueId);
+  if (!issueSelectableForBulkActions(issue)) {
     selectedVotingIssueIds.delete(issueId);
     renderIssues();
     return;
   }
-
-  if (selected) {
-    selectedVotingIssueIds.add(issueId);
-  } else {
-    selectedVotingIssueIds.delete(issueId);
-  }
-
-  const item = Array.from(
-    $("issueList").querySelectorAll(
-      "[data-issue-id]"
-    )
-  ).find(
-    element => element.dataset.issueId === issueId
-  );
-
-  item?.classList.toggle(
-    "bulk-selected",
-    selected
-  );
-
-  renderBulkVotingControls();
+  if (selected) selectedVotingIssueIds.add(issueId); else selectedVotingIssueIds.delete(issueId);
+  renderIssues();
 }
 
 function toggleSelectAllVotingIssues() {
-  if (!canManageEstimation() || bulkVotingInProgress) {
-    return;
+  if (!canManageEstimation() || bulkVotingInProgress || bulkMoveInProgress) return;
+  const selectableIssues = visibleBulkSelectableIssues();
+  const allSelected = selectableIssues.length > 0 && selectableIssues.every(issue => selectedVotingIssueIds.has(issue.id));
+  for (const issue of selectableIssues) {
+    if (allSelected) selectedVotingIssueIds.delete(issue.id); else selectedVotingIssueIds.add(issue.id);
   }
+  renderIssues();
+}
 
-  const selectableIssues = votingSelectableIssues();
-  const allSelected =
-    selectableIssues.length > 0
-    && selectableIssues.every(
-      issue => selectedVotingIssueIds.has(issue.id)
-    );
-
-  if (allSelected) {
-    for (const issue of selectableIssues) {
-      selectedVotingIssueIds.delete(issue.id);
-    }
-  } else {
-    for (const issue of selectableIssues) {
-      selectedVotingIssueIds.add(issue.id);
-    }
-  }
-
+function clearSelectedIssues() {
+  if (bulkVotingInProgress || bulkMoveInProgress) return;
+  selectedVotingIssueIds.clear();
   renderIssues();
 }
 
 async function startSelectedVoting() {
-  if (!canManageEstimation() || bulkVotingInProgress) {
-    return;
-  }
-
-  const issues = state.issues.filter(
-    issue =>
-      issue.status === "pending"
-      && selectedVotingIssueIds.has(issue.id)
-  );
-
-  if (!issues.length) {
-    selectedVotingIssueIds.clear();
-    renderIssues();
-    return;
-  }
-
+  if (!canManageEstimation() || bulkVotingInProgress || bulkMoveInProgress) return;
+  const issues = selectedPendingIssues();
+  if (!issues.length) { renderIssues(); return; }
   bulkVotingInProgress = true;
   renderBulkVotingControls();
-
   try {
-    /*
-      Один batch Firestore допускает до 500 операций. Оставляем запас и
-      обрабатываем большие списки частями по 400 задач.
-    */
     const chunkSize = 400;
-
-    for (
-      let offset = 0;
-      offset < issues.length;
-      offset += chunkSize
-    ) {
+    for (let offset = 0; offset < issues.length; offset += chunkSize) {
       const batch = writeBatch(db);
-      const chunk = issues.slice(
-        offset,
-        offset + chunkSize
-      );
-
+      const chunk = issues.slice(offset, offset + chunkSize);
       for (const issue of chunk) {
-        batch.update(
-          doc(
-            db,
-            "teams", state.teamId,
-            "sessions", state.sessionId,
-            "issues", issue.id
-          ),
-          {
-            status: "voting",
-            updatedAt: serverTimestamp()
-          }
-        );
+        batch.update(doc(db,"teams",state.teamId,"sessions",state.sessionId,"issues",issue.id),{status:"voting",updatedAt:serverTimestamp()});
       }
-
       await batch.commit();
     }
-
-    selectedVotingIssueIds.clear();
-
-    toast(
-      issues.length === 1
-        ? "Голосование начато по выбранной задаче."
-        : `Голосование начато по ${issues.length} задачам.`,
-      "success"
-    );
-  } catch (error) {
-    handleError(error);
-  } finally {
-    bulkVotingInProgress = false;
-    renderIssues();
-  }
-}
-
-
-function issueTransferInfo(
-  issue = state.issue,
-  context = null
-) {
-  if (!issue || !issue.movedFromSessionId) {
-    return null;
-  }
-
-  const targetSessionId = String(
-    context?.sessionId
-    || state.sessionId
-    || ""
-  );
-
-  const targetSessionName = String(
-    context?.sessionName
-    || (
-      targetSessionId === state.sessionId
-        ? currentSession()?.name
-        : ""
-    )
-    || ""
-  );
-
-  return {
-    isTransferred: true,
-    fromSessionId: String(
-      issue.movedFromSessionId || ""
-    ),
-    fromSessionName: String(
-      issue.movedFromSessionName || ""
-    ),
-    toSessionId: targetSessionId,
-    toSessionName: targetSessionName,
-    movedAt: timestampToIso(issue.movedAt),
-    movedAtLabel: formatHistoryDate(issue.movedAt),
-    movedBy: {
-      uid: issue.movedByUid || null,
-      email: issue.movedByEmail || null,
-      displayName:
-        issue.movedByDisplayName || null
-    }
-  };
-}
-
-function issueTransferTooltip(issue) {
-  const transfer = issueTransferInfo(issue);
-
-  if (!transfer) return "";
-
-  const details = [
-    transfer.fromSessionName
-      ? `Из сессии «${transfer.fromSessionName}»`
-      : "Перенесена из другой сессии",
-    transfer.toSessionName
-      ? `в сессию «${transfer.toSessionName}»`
-      : "",
-    transfer.movedAtLabel
-      ? `Дата переноса: ${transfer.movedAtLabel}`
-      : ""
-  ].filter(Boolean);
-
-  return details.join(". ");
+    for (const issue of issues) selectedVotingIssueIds.delete(issue.id);
+    toast(issues.length===1?"Голосование начато по выбранной задаче.":`Голосование начато по ${issues.length} задачам.`,"success");
+  } catch (error) { handleError(error); }
+  finally { bulkVotingInProgress=false; renderIssues(); }
 }
 
 function issueListItemHtml(issue) {
@@ -3569,24 +3431,23 @@ function issueListItemHtml(issue) {
     calculatorGitLabBadgeHtml(issue, { compact: true })
   ].filter(Boolean).join("");
 
-  const selectableForVoting =
-    canManageEstimation()
-    && issue.status === "pending";
+  const selectableForBulk =
+    issueSelectableForBulkActions(issue);
 
-  const selectedForVoting =
-    selectableForVoting
+  const selectedForBulk =
+    selectableForBulk
     && selectedVotingIssueIds.has(issue.id);
 
-  const votingCheckbox = selectableForVoting
+  const votingCheckbox = selectableForBulk
     ? `
         <input
           class="issue-voting-checkbox"
           type="checkbox"
           data-voting-issue-id="${issue.id}"
           aria-label="${escapeHtml(
-            `Выбрать задачу «${issue.title}» для начала голосования`
+            `Выбрать задачу «${issue.title}» для массовых действий`
           )}"
-          ${selectedForVoting ? "checked" : ""}
+          ${selectedForBulk ? "checked" : ""}
         >
       `
     : "";
@@ -3600,7 +3461,7 @@ function issueListItemHtml(issue) {
           ? "has-prior-gitlab"
           : ""
       } ${
-        selectedForVoting
+        selectedForBulk
           ? "bulk-selected"
           : ""
       }"
@@ -5233,349 +5094,64 @@ function latestIssueEstimateInfo(
 }
 
 function bulkMoveMode() {
-  return (
-    document.querySelector(
-      'input[name="bulkMoveMode"]:checked'
-    )?.value
-    || "reestimate"
-  );
+  return document.querySelector('input[name="bulkMoveMode"]:checked')?.value || "reestimate";
 }
 
-function bulkMoveIssueAvailability(
-  issue,
-  mode = bulkMoveMode()
-) {
-  if (!issue) {
-    return {
-      available: false,
-      reason: "Задача не найдена"
-    };
-  }
-
-  if (issue.moveState === "copying") {
-    return {
-      available: false,
-      reason: "Перенос уже выполняется"
-    };
-  }
-
-  if (issue.status === "voting") {
-    return {
-      available: false,
-      reason: "Идёт голосование"
-    };
-  }
-
-  if (
-    mode === "reuse"
-    && !latestIssueEstimateInfo(issue)
-  ) {
-    return {
-      available: false,
-      reason: "Нет зафиксированной оценки"
-    };
-  }
-
-  return {
-    available: true,
-    reason: ""
-  };
+function bulkMoveIssueAvailability(issue, mode = bulkMoveMode()) {
+  if (!issue) return {available:false,reason:"Задача не найдена"};
+  if (issue.moveState === "copying" || issue.status === "voting") return {available:false,reason:issue.status === "voting" ? "Идёт голосование" : "Перенос уже выполняется"};
+  if (mode === "reuse" && !latestIssueEstimateInfo(issue)) return {available:false,reason:"Нет зафиксированной оценки"};
+  return {available:true,reason:""};
 }
 
-function bulkMoveCandidateIssues() {
-  return state.issues.filter(
-    issue => issue.moveState !== "copying"
-  );
-}
-
-function pruneBulkMoveSelection() {
+function bulkMoveDialogSelection() {
   const mode = bulkMoveMode();
-
-  for (const issueId of selectedBulkMoveIssueIds) {
-    const issue = state.issues.find(
-      item => item.id === issueId
-    );
-
-    if (
-      !bulkMoveIssueAvailability(
-        issue,
-        mode
-      ).available
-    ) {
-      selectedBulkMoveIssueIds.delete(issueId);
-    }
-  }
+  const selected = selectedTransferableIssues();
+  const eligible = selected.filter(issue => bulkMoveIssueAvailability(issue,mode).available);
+  const excluded = selected.filter(issue => !bulkMoveIssueAvailability(issue,mode).available);
+  return {selected,eligible,excluded};
 }
 
-function renderBulkMoveIssueList() {
-  const root = $("bulkMoveIssueList");
-  const count = $("bulkMoveSelectedCount");
-  const hint = $("bulkMoveEligibilityHint");
-  const confirmButton = $("confirmBulkMoveIssueBtn");
-  const selectAllButton = $("bulkMoveSelectAllBtn");
-
-  if (
-    !root
-    || !count
-    || !hint
-    || !confirmButton
-    || !selectAllButton
-  ) {
-    return;
+function renderBulkMoveDialogState() {
+  const summary=$("bulkMoveSelectedSummary"), hint=$("bulkMoveEligibilityHint"), confirmButton=$("confirmBulkMoveIssueBtn");
+  if (!summary || !hint || !confirmButton) return;
+  const {selected,eligible,excluded}=bulkMoveDialogSelection();
+  const mode=bulkMoveMode();
+  summary.textContent=`Выбрано задач: ${selected.length}.`;
+  if (mode === "reestimate") {
+    hint.className="message info";
+    hint.textContent=eligible.length?`Все ${eligible.length} задач будут перенесены на переоценку.`:"Нет задач, доступных для переноса.";
+  } else if (excluded.length) {
+    hint.className="message warning";
+    hint.textContent=`${excluded.length} из ${selected.length} задач не имеют зафиксированной оценки и будут исключены. Будет перенесено: ${eligible.length}.`;
+  } else {
+    hint.className="message info";
+    hint.textContent=`Все ${eligible.length} задач будут перенесены с последней оценкой.`;
   }
-
-  pruneBulkMoveSelection();
-
-  const mode = bulkMoveMode();
-  const issues = bulkMoveCandidateIssues();
-
-  const availableIssues = issues.filter(
-    issue =>
-      bulkMoveIssueAvailability(
-        issue,
-        mode
-      ).available
-  );
-
-  const selectedCount =
-    selectedBulkMoveIssueIds.size;
-
-  const allAvailableSelected =
-    availableIssues.length > 0
-    && availableIssues.every(
-      issue =>
-        selectedBulkMoveIssueIds.has(issue.id)
-    );
-
-  count.textContent = String(selectedCount);
-
-  hint.textContent =
-    mode === "reuse"
-      ? `Доступно без переоценки: ${availableIssues.length} из ${issues.length}`
-      : `Доступно для переноса: ${availableIssues.length} из ${issues.length}`;
-
-  selectAllButton.textContent =
-    allAvailableSelected
-      ? "Снять выбор"
-      : "Выбрать все доступные";
-
-  selectAllButton.disabled =
-    bulkMoveInProgress
-    || availableIssues.length === 0;
-
-  const hasTarget = Boolean(
-    $("bulkMoveTargetSession")?.value
-  );
-
-  confirmButton.disabled =
-    bulkMoveInProgress
-    || selectedCount === 0
-    || !hasTarget;
-
-  confirmButton.textContent =
-    bulkMoveInProgress
-      ? "Перенос…"
-      : selectedCount
-        ? `Перенести · ${selectedCount}`
-        : "Перенести";
-
-  root.innerHTML = issues.length
-    ? issues.map(issue => {
-        const availability =
-          bulkMoveIssueAvailability(
-            issue,
-            mode
-          );
-
-        const selected =
-          availability.available
-          && selectedBulkMoveIssueIds.has(issue.id);
-
-        const lastEstimate =
-          latestIssueEstimateInfo(issue);
-
-        const gitlabStatus =
-          issueGitLabWorkflowStatus(issue);
-
-        const metaParts = [
-          issueDisplayStatusText(issue),
-          gitlabStatus === "__missing__"
-            ? "GitLab: статус не указан"
-            : `GitLab: ${gitlabStatus}`,
-          lastEstimate
-            ? `Последняя оценка: ${lastEstimate.finalEstimate} ч.д.`
-            : "Оценки ещё не было"
-        ];
-
-        if (
-          !availability.available
-          && availability.reason
-        ) {
-          metaParts.push(availability.reason);
-        }
-
-        return `
-          <label
-            class="bulk-move-issue-row ${
-              availability.available
-                ? ""
-                : "disabled"
-            }"
-          >
-            <input
-              type="checkbox"
-              data-bulk-move-issue-id="${escapeHtml(issue.id)}"
-              ${selected ? "checked" : ""}
-              ${availability.available ? "" : "disabled"}
-            >
-
-            <span class="bulk-move-issue-body">
-              <strong>
-                ${escapeHtml(
-                  issue.title
-                  || "Задача без названия"
-                )}
-              </strong>
-              <small>
-                ${escapeHtml(metaParts.join(" · "))}
-              </small>
-            </span>
-          </label>
-        `;
-      }).join("")
-    : '<div class="empty-state">В текущей сессии нет задач.</div>';
-
-  root.querySelectorAll(
-    "[data-bulk-move-issue-id]"
-  ).forEach(checkbox => {
-    checkbox.addEventListener(
-      "change",
-      event => {
-        const issueId = String(
-          event.currentTarget
-            .dataset.bulkMoveIssueId
-          || ""
-        ).trim();
-
-        if (!issueId) return;
-
-        if (event.currentTarget.checked) {
-          selectedBulkMoveIssueIds.add(issueId);
-        } else {
-          selectedBulkMoveIssueIds.delete(issueId);
-        }
-
-        renderBulkMoveIssueList();
-      }
-    );
-  });
+  const hasTarget=Boolean($("bulkMoveTargetSession")?.value);
+  confirmButton.disabled=bulkMoveInProgress || eligible.length===0 || !hasTarget;
+  confirmButton.textContent=bulkMoveInProgress?"Перенос…":eligible.length?`Перенести ${eligible.length} задач`:"Перенести";
 }
 
 function handleBulkMoveModeChange() {
-  pruneBulkMoveSelection();
   setFormMessage($("bulkMoveIssueMessage"));
-  renderBulkMoveIssueList();
-}
-
-function toggleSelectAllBulkMoveIssues() {
-  if (bulkMoveInProgress) return;
-
-  const mode = bulkMoveMode();
-
-  const availableIssues =
-    bulkMoveCandidateIssues().filter(
-      issue =>
-        bulkMoveIssueAvailability(
-          issue,
-          mode
-        ).available
-    );
-
-  const allSelected =
-    availableIssues.length > 0
-    && availableIssues.every(
-      issue =>
-        selectedBulkMoveIssueIds.has(issue.id)
-    );
-
-  for (const issue of availableIssues) {
-    if (allSelected) {
-      selectedBulkMoveIssueIds.delete(issue.id);
-    } else {
-      selectedBulkMoveIssueIds.add(issue.id);
-    }
-  }
-
-  renderBulkMoveIssueList();
+  renderBulkMoveDialogState();
 }
 
 function openBulkMoveIssueDialog() {
-  if (
-    !canManageEstimation()
-    || !state.sessionId
-  ) {
-    return;
-  }
-
-  const targetSessions =
-    state.sessions.filter(
-      session =>
-        session.id !== state.sessionId
-    );
-
-  selectedBulkMoveIssueIds.clear();
-  bulkMoveInProgress = false;
-
-  const reestimateRadio =
-    document.querySelector(
-      'input[name="bulkMoveMode"][value="reestimate"]'
-    );
-
-  if (reestimateRadio) {
-    reestimateRadio.checked = true;
-  }
-
-  $("bulkMoveSourceSession").textContent =
-    currentSession()?.name
-    || state.sessionId
-    || "";
-
-  $("bulkMoveTargetSession").innerHTML =
-    targetSessions.length
-      ? targetSessions.map(session => `
-          <option value="${escapeHtml(session.id)}">
-            ${escapeHtml(session.name)}
-            ${
-              session.iteration
-                ? ` — ${escapeHtml(session.iteration)}`
-                : ""
-            }
-            ${
-              session.status === "finished"
-                ? " (завершена)"
-                : ""
-            }
-          </option>
-        `).join("")
-      : '<option value="">Нет другой сессии в этой команде</option>';
-
-  $("bulkMoveTargetSession").disabled =
-    targetSessions.length === 0;
-
-  $("bulkMoveTargetSession").onchange =
-    () => renderBulkMoveIssueList();
-
-  setFormMessage(
-    $("bulkMoveIssueMessage"),
-    targetSessions.length
-      ? "Выберите задачи и режим переноса."
-      : "Сначала создайте ещё одну сессию в этой команде.",
-    targetSessions.length
-      ? "info"
-      : "error"
-  );
-
-  renderBulkMoveIssueList();
+  if (!canManageEstimation() || !state.sessionId) return;
+  pruneVotingIssueSelection();
+  const selected=selectedTransferableIssues();
+  if (!selected.length) { toast("Сначала выберите задачи в списке.","error",3500); return; }
+  const targetSessions=state.sessions.filter(session=>session.id!==state.sessionId);
+  bulkMoveInProgress=false;
+  const reestimateRadio=document.querySelector('input[name="bulkMoveMode"][value="reestimate"]');
+  if (reestimateRadio) reestimateRadio.checked=true;
+  $("bulkMoveTargetSession").innerHTML=targetSessions.length?targetSessions.map(session=>`<option value="${escapeHtml(session.id)}">${escapeHtml(session.name)}${session.iteration?` — ${escapeHtml(session.iteration)}`:""}${session.status==="finished"?" (завершена)":""}</option>`).join(""):'<option value="">Нет другой сессии в этой команде</option>';
+  $("bulkMoveTargetSession").disabled=targetSessions.length===0;
+  $("bulkMoveTargetSession").onchange=renderBulkMoveDialogState;
+  setFormMessage($("bulkMoveIssueMessage"),targetSessions.length?"":"Сначала создайте ещё одну сессию в этой команде.",targetSessions.length?"info":"error");
+  renderBulkMoveDialogState();
   openDialog("bulkMoveIssueDialog");
 }
 
@@ -6448,235 +6024,40 @@ async function moveIssueToSession() {
 }
 
 async function moveSelectedIssuesToSession() {
-  if (
-    !canManageEstimation()
-    || bulkMoveInProgress
-  ) {
-    return;
-  }
-
-  const targetSessionId =
-    $("bulkMoveTargetSession").value;
-
-  const messageTarget =
-    $("bulkMoveIssueMessage");
-
-  if (
-    !targetSessionId
-    || targetSessionId === state.sessionId
-  ) {
-    setFormMessage(
-      messageTarget,
-      "Выберите другую сессию.",
-      "error"
-    );
-    return;
-  }
-
-  const targetSession =
-    state.sessions.find(
-      session =>
-        session.id === targetSessionId
-    );
-
-  if (!targetSession) {
-    setFormMessage(
-      messageTarget,
-      "Выбранная сессия не найдена.",
-      "error"
-    );
-    return;
-  }
-
-  const mode = bulkMoveMode();
-  const reestimate =
-    mode !== "reuse";
-
-  pruneBulkMoveSelection();
-
-  const selectedIssues =
-    state.issues.filter(
-      issue =>
-        selectedBulkMoveIssueIds.has(
-          issue.id
-        )
-    );
-
-  if (!selectedIssues.length) {
-    setFormMessage(
-      messageTarget,
-      "Выберите хотя бы одну задачу.",
-      "error"
-    );
-    renderBulkMoveIssueList();
-    return;
-  }
-
-  const unavailable =
-    selectedIssues.filter(
-      issue =>
-        !bulkMoveIssueAvailability(
-          issue,
-          mode
-        ).available
-    );
-
-  if (unavailable.length) {
-    setFormMessage(
-      messageTarget,
-      "Часть выбранных задач больше нельзя перенести в выбранном режиме. Обновите выбор.",
-      "error"
-    );
-    renderBulkMoveIssueList();
-    return;
-  }
-
-  const sourceTeamId = state.teamId;
-
-  bulkMoveInProgress = true;
-  renderBulkMoveIssueList();
-
-  let succeeded = 0;
-  let failed = 0;
-  let calculatorSyncWarnings = 0;
-  const failures = [];
-  let firstMovedIssueId = null;
-
+  if (!canManageEstimation() || bulkMoveInProgress || bulkVotingInProgress) return;
+  const targetSessionId=$("bulkMoveTargetSession").value;
+  const messageTarget=$("bulkMoveIssueMessage");
+  if (!targetSessionId || targetSessionId===state.sessionId) {setFormMessage(messageTarget,"Выберите другую сессию.","error");return;}
+  const targetSession=state.sessions.find(session=>session.id===targetSessionId);
+  if (!targetSession) {setFormMessage(messageTarget,"Выбранная сессия не найдена.","error");return;}
+  const mode=bulkMoveMode(), reestimate=mode!=="reuse";
+  const {selected,eligible,excluded}=bulkMoveDialogSelection();
+  if (!selected.length) {closeDialog("bulkMoveIssueDialog");renderIssues();return;}
+  if (!eligible.length) {setFormMessage(messageTarget,mode==="reuse"?"У выбранных задач нет зафиксированной оценки. Выберите режим «С переоценкой».":"Нет задач, доступных для переноса.","error");return;}
+  bulkMoveInProgress=true; renderBulkVotingControls(); renderBulkMoveDialogState();
+  let succeeded=0, failed=0, calculatorSyncWarnings=0; const failures=[];
   try {
-    for (
-      let index = 0;
-      index < selectedIssues.length;
-      index += 1
-    ) {
-      const issue =
-        selectedIssues[index];
-
-      const prefix =
-        `${index + 1}/${selectedIssues.length} · ${issue.title}`;
-
+    for (let index=0; index<eligible.length; index+=1) {
+      const issue=eligible[index]; const prefix=`${index+1}/${eligible.length} · ${issue.title}`;
       try {
-        const result =
-          await moveIssueRecordToSession({
-            issueId: issue.id,
-            targetSessionId,
-            reestimate,
-            messageTarget,
-            progressPrefix: prefix
-          });
-
-        succeeded += 1;
-
-        firstMovedIssueId =
-          firstMovedIssueId || issue.id;
-
-        selectedBulkMoveIssueIds.delete(
-          issue.id
-        );
-
-        if (
-          result.calculatorSync
-          && result.calculatorSync.ok === false
-        ) {
-          calculatorSyncWarnings += 1;
-        }
-      } catch (error) {
-        failed += 1;
-
-        failures.push({
-          issueId: issue.id,
-          title:
-            issue.title
-            || "Задача без названия",
-          stage:
-            error.moveStage
-            || "неизвестный этап",
-          error: String(
-            error?.message || error
-          )
-        });
-
-        console.error(
-          "Ошибка массового переноса",
-          failures[failures.length - 1],
-          error
-        );
+        const result=await moveIssueRecordToSession({issueId:issue.id,targetSessionId,reestimate,messageTarget,progressPrefix:prefix});
+        succeeded+=1; selectedVotingIssueIds.delete(issue.id);
+        if (result.calculatorSync && result.calculatorSync.ok===false) calculatorSyncWarnings+=1;
+      } catch(error) {
+        failed+=1; failures.push({issueId:issue.id,title:issue.title||"Задача без названия",stage:error.moveStage||"неизвестный этап",error:String(error?.message||error)});
+        console.error("Ошибка массового переноса",failures[failures.length-1],error);
       }
     }
-
-    if (failed) {
-      const firstFailure = failures[0];
-
-      setFormMessage(
-        messageTarget,
-        `Перенесено: ${succeeded}. Ошибок: ${failed}. Первая ошибка: «${firstFailure.title}» — ${firstFailure.error}`,
-        "error"
-      );
-    } else {
-      setFormMessage(
-        messageTarget,
-        calculatorSyncWarnings
-          ? `Перенесено задач: ${succeeded}. Для ${calculatorSyncWarnings} задач Team_calculator не обновился сразу.`
-          : `Перенесено задач: ${succeeded}.`,
-        calculatorSyncWarnings
-          ? "info"
-          : "success"
-      );
-    }
-
-    if (succeeded > 0) {
-      closeDialog(
-        "bulkMoveIssueDialog"
-      );
-
-      if (firstMovedIssueId) {
-        pendingTaskLink = {
-          teamId: sourceTeamId,
-          sessionId: targetSessionId,
-          issueId: firstMovedIssueId
-        };
-
-        const newUrl =
-          new URL(window.location.href);
-
-        newUrl.hash =
-          new URLSearchParams({
-            team: sourceTeamId,
-            session: targetSessionId,
-            issue: firstMovedIssueId
-          }).toString();
-
-        window.history.replaceState(
-          null,
-          "",
-          newUrl.hash
-        );
-      }
-
-      selectSession(targetSessionId);
-
-      const modeLabel =
-        reestimate
-          ? "с переоценкой"
-          : "с последней оценкой";
-
-      toast(
-        failed
-          ? `Перенесено ${succeeded} из ${selectedIssues.length} задач ${modeLabel}. Ошибок: ${failed}.`
-          : `Перенесено ${succeeded} задач ${modeLabel}.`,
-        failed ? "error" : "success",
-        7000
-      );
-    }
-  } finally {
-    bulkMoveInProgress = false;
-
-    if (
-      $("bulkMoveIssueDialog")
-        ?.open
-    ) {
-      renderBulkMoveIssueList();
-    }
-  }
+    closeDialog("bulkMoveIssueDialog");
+    const modeLabel=reestimate?"с переоценкой":"с последней оценкой";
+    let resultText=`Перенесено ${succeeded} задач в «${targetSession.name}» ${modeLabel}.`;
+    if (excluded.length) resultText+=` Исключено без оценки: ${excluded.length}.`;
+    if (failed) resultText+=` Ошибок: ${failed}.`;
+    if (calculatorSyncWarnings) resultText+=` Team_calculator не обновился сразу для ${calculatorSyncWarnings} задач.`;
+    toast(resultText,failed?"error":"success",8000);
+    // В целевую сессию автоматически не переключаемся.
+    renderIssues();
+  } finally { bulkMoveInProgress=false; renderIssues(); }
 }
 
 

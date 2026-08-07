@@ -192,6 +192,39 @@ service cloud.firestore {
       }
 
 
+      match /delivery_status/{issueId} {
+        allow read: if isTeamMember(teamId);
+
+        // Snapshot публикует metadata_connector серверными IAM-правами.
+        allow create, update, delete: if false;
+      }
+
+      match /delivery_status_refresh/{requestId} {
+        allow read: if isTeamMember(teamId);
+
+        // Любой участник команды может запросить только перепубликацию
+        // уже сохранённых данных Team_calculator. GitLab в этом job
+        // не опрашивается.
+        allow create: if isTeamMember(teamId)
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.type
+            == 'refresh_delivery_status'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.teamId == teamId
+          && request.resource.data.sessionId is string
+          && request.resource.data.sessionId.size() > 0
+          && request.resource.data.requestedByUid
+            == request.auth.uid
+          && request.resource.data.requestedByEmail is string
+          && request.resource.data.requestedByEmail.size() > 0
+          && request.resource.data.requestedByEmail.size() <= 254
+          && request.resource.data.requestedAt is string
+          && request.resource.data.updatedAt is string;
+
+        // Обновляет только metadata_connector через серверные IAM-права.
+        allow update, delete: if false;
+      }
+
       match /gitlab_jobs/{jobId} {
         allow read: if isTeamMember(teamId);
 
@@ -419,7 +452,8 @@ service cloud.firestore {
           }
 
           match /votes/{voteId} {
-            allow read: if isTeamMember(teamId)
+            allow read: if (
+              isTeamMember(teamId)
               && (
                 resource.data.userId == request.auth.uid
                 || resource.data.round
@@ -430,7 +464,20 @@ service cloud.firestore {
                   && issueData(teamId, sessionId, issueId).status
                     in ['revealed', 'estimated']
                 )
-              );
+              )
+            ) || (
+              // Для безопасного переноса менеджер должен уметь прочитать
+              // всю коллекцию votes, в том числе когда она пуста.
+              // Во время активного голосования чужие голоса по-прежнему
+              // остаются закрыты.
+              canManageEstimation(teamId)
+              && (
+                issueData(teamId, sessionId, issueId).moveState
+                  == 'copying'
+                || issueData(teamId, sessionId, issueId).status
+                  != 'voting'
+              )
+            );
 
             allow create, update: if (
               canVote(teamId)
