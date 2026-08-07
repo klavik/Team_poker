@@ -109,6 +109,21 @@ let gitlabHistoryRequestId = 0;
 const selectedVotingIssueIds = new Set();
 let bulkVotingInProgress = false;
 
+const selectedBulkMoveIssueIds = new Set();
+let bulkMoveInProgress = false;
+
+/*
+  GitLab-статус фильтруется независимо для активных и оценённых задач.
+  "__missing__" означает отсутствие workflow statusLabel в Team_calculator.
+*/
+const issueGitLabStatusFilters = {
+  active: "all",
+  estimated: "all"
+};
+
+let deliveryStatusRefreshInProgress = false;
+let deliveryStatusRefreshUnsubscribe = null;
+
 const $ = id => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -456,6 +471,17 @@ function unsubscribe(fn) {
   if (typeof fn === "function") fn();
 }
 
+function clearDeliveryStatusRefreshListener() {
+  unsubscribe(deliveryStatusRefreshUnsubscribe);
+  deliveryStatusRefreshUnsubscribe = null;
+  deliveryStatusRefreshInProgress = false;
+}
+
+function resetIssueGitLabStatusFilters() {
+  issueGitLabStatusFilters.active = "all";
+  issueGitLabStatusFilters.estimated = "all";
+}
+
 function clearVoteListeners() {
   unsubscribe(unsubscribeOwnVote);
   unsubscribe(unsubscribeVoteStatuses);
@@ -501,6 +527,7 @@ function clearAllListeners() {
   unsubscribeTeams = null;
   unsubscribeUsers = null;
 
+  clearDeliveryStatusRefreshListener();
   clearTeamListeners();
 }
 
@@ -583,6 +610,32 @@ function bindEvents() {
 
   $("openIssueDialogBtn").addEventListener("click", () => openDialog("issueDialog"));
   $("createIssueBtn").addEventListener("click", createIssue);
+  $("refreshTaskStatusesBtn").addEventListener(
+    "click",
+    requestTaskStatusesRefresh
+  );
+  $("openBulkMoveIssueDialogBtn").addEventListener(
+    "click",
+    openBulkMoveIssueDialog
+  );
+  $("bulkMoveSelectAllBtn").addEventListener(
+    "click",
+    toggleSelectAllBulkMoveIssues
+  );
+  $("confirmBulkMoveIssueBtn").addEventListener(
+    "click",
+    moveSelectedIssuesToSession
+  );
+
+  document.querySelectorAll(
+    'input[name="bulkMoveMode"]'
+  ).forEach(input => {
+    input.addEventListener(
+      "change",
+      handleBulkMoveModeChange
+    );
+  });
+
   $("openIssueAuditBtn").addEventListener("click", openIssueAuditDialog);
   $("selectAllVotingIssuesBtn").addEventListener(
     "click",
@@ -1131,6 +1184,10 @@ function selectTeam(teamId) {
   gitlabHistoryRequestId += 1;
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
+  selectedBulkMoveIssueIds.clear();
+  bulkMoveInProgress = false;
+  clearDeliveryStatusRefreshListener();
+  resetIssueGitLabStatusFilters();
   clearCalculatorDeliveryStatuses();
 
   state.teamId = teamId || null;
@@ -1162,6 +1219,10 @@ function resetTeamDependentState() {
   gitlabHistoryRequestId += 1;
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
+  selectedBulkMoveIssueIds.clear();
+  bulkMoveInProgress = false;
+  clearDeliveryStatusRefreshListener();
+  resetIssueGitLabStatusFilters();
   clearCalculatorDeliveryStatuses();
 
   state.teamId = null;
@@ -1233,6 +1294,9 @@ function renderTeamControls() {
 
   $("openIssueDialogBtn").disabled =
     !canCreateIssue() || !state.sessionId;
+
+  $("openBulkMoveIssueDialogBtn").disabled =
+    !estimationManager || !state.sessionId;
 
   $("editSessionBtn").disabled =
     !estimationManager || !state.sessionId;
@@ -1858,6 +1922,10 @@ function selectSession(sessionId) {
   clearIssueListener();
   selectedVotingIssueIds.clear();
   bulkVotingInProgress = false;
+  selectedBulkMoveIssueIds.clear();
+  bulkMoveInProgress = false;
+  clearDeliveryStatusRefreshListener();
+  resetIssueGitLabStatusFilters();
   clearCalculatorDeliveryStatuses();
 
   state.sessionId = sessionId || null;
@@ -2915,6 +2983,143 @@ function notifyCalculatorIssuesChanged() {
   );
 }
 
+function renderTaskStatusesRefreshButton() {
+  const button = $("refreshTaskStatusesBtn");
+
+  if (!button) return;
+
+  const available = Boolean(
+    currentUser
+    && state.teamId
+    && state.sessionId
+  );
+
+  button.disabled =
+    !available
+    || deliveryStatusRefreshInProgress;
+
+  button.textContent =
+    deliveryStatusRefreshInProgress
+      ? "Обновление статусов…"
+      : "Обновить статусы";
+}
+
+async function requestTaskStatusesRefresh() {
+  if (
+    !currentUser
+    ||!state.teamId
+    ||!state.sessionId
+    ||deliveryStatusRefreshInProgress
+  ) {
+    return;
+  }
+
+  clearDeliveryStatusRefreshListener();
+
+  deliveryStatusRefreshInProgress = true;
+  renderTaskStatusesRefreshButton();
+
+  const now = new Date().toISOString();
+
+  try {
+    const requestRef = await addDoc(
+      collection(
+        db,
+        "teams",
+        state.teamId,
+        "delivery_status_refresh"
+      ),
+      {
+        schemaVersion: 1,
+        type: "refresh_delivery_status",
+        status: "pending",
+        teamId: state.teamId,
+        sessionId: state.sessionId,
+        sessionName: currentSession()?.name || "",
+        requestedByUid: currentUser.uid,
+        requestedByEmail:
+          normalizeEmail(currentUser.email),
+        requestedByDisplayName:
+          currentUser.displayName
+          ||currentUser.email
+          ||"",
+        requestedAt: now,
+        updatedAt: now
+      }
+    );
+
+    toast(
+      "Запрос на обновление статусов передан connector.",
+      "success",
+      2500
+    );
+
+    deliveryStatusRefreshUnsubscribe =
+      onSnapshot(
+        requestRef,
+        snapshot => {
+          if (!snapshot.exists()) return;
+
+          const data = snapshot.data() || {};
+          const status = String(
+            data.status || ""
+          ).trim();
+
+          if (
+            status === "pending"
+            ||status === "processing"
+          ) {
+            return;
+          }
+
+          const mirroredCount = Number(
+            data.mirroredCount || 0
+          );
+
+          clearDeliveryStatusRefreshListener();
+          renderTaskStatusesRefreshButton();
+
+          if (status === "succeeded") {
+            toast(
+              `Статусы обновлены: ${mirroredCount}.`,
+              "success",
+              3500
+            );
+            return;
+          }
+
+          toast(
+            String(
+              data.error
+              ||"Не удалось обновить статусы."
+            ),
+            "error",
+            6000
+          );
+        },
+        error => {
+          console.error(
+            "Ошибка наблюдения за обновлением статусов",
+            error
+          );
+
+          clearDeliveryStatusRefreshListener();
+          renderTaskStatusesRefreshButton();
+
+          toast(
+            "Не удалось получить результат обновления статусов.",
+            "error",
+            5000
+          );
+        }
+      );
+  } catch (error) {
+    clearDeliveryStatusRefreshListener();
+    renderTaskStatusesRefreshButton();
+    handleError(error);
+  }
+}
+
 function issueStatusText(status) {
   return ({
     pending: "Не начата",
@@ -2932,10 +3137,69 @@ function issueDisplayStatusText(issue) {
   return issueStatusText(issue?.status);
 }
 
+function issueGitLabWorkflowStatus(issue) {
+  const value = String(
+    calculatorDeliveryStatus(issue)
+      ?.gitlab
+      ?.statusLabel
+    ||""
+  ).trim();
+
+  return value || "__missing__";
+}
+
+function gitLabStatusFilterLabel(value) {
+  return value === "__missing__"
+    ? "Статус не указан"
+    : value;
+}
+
+function issueMatchesGitLabStatusFilter(
+  issue,
+  filterValue
+) {
+  return (
+    !filterValue
+    ||filterValue === "all"
+    ||issueGitLabWorkflowStatus(issue)
+      ===filterValue
+  );
+}
+
+function gitLabStatusFilterOptions(issues) {
+  return [
+    ...new Set(
+      issues.map(
+        issue=>issueGitLabWorkflowStatus(issue)
+      )
+    )
+  ].sort((a,b)=>{
+    if(a==="__missing__")return 1;
+    if(b==="__missing__")return -1;
+
+    return a.localeCompare(
+      b,
+      "ru",
+      {sensitivity:"base"}
+    );
+  });
+}
+
+function visibleActiveIssues() {
+  return state.issues.filter(
+    issue =>
+      issue.status !== "estimated"
+      &&issueMatchesGitLabStatusFilter(
+        issue,
+        issueGitLabStatusFilters.active
+      )
+  );
+}
+
 function votingSelectableIssues() {
   if (!canManageEstimation()) return [];
 
-  return state.issues.filter(
+  return visibleActiveIssues().filter(
     issue => issue.status === "pending"
   );
 }
@@ -3142,10 +3406,29 @@ async function startSelectedVoting() {
 }
 
 
-function issueTransferInfo(issue = state.issue) {
+function issueTransferInfo(
+  issue = state.issue,
+  context = null
+) {
   if (!issue || !issue.movedFromSessionId) {
     return null;
   }
+
+  const targetSessionId = String(
+    context?.sessionId
+    || state.sessionId
+    || ""
+  );
+
+  const targetSessionName = String(
+    context?.sessionName
+    || (
+      targetSessionId === state.sessionId
+        ? currentSession()?.name
+        : ""
+    )
+    || ""
+  );
 
   return {
     isTransferred: true,
@@ -3155,10 +3438,8 @@ function issueTransferInfo(issue = state.issue) {
     fromSessionName: String(
       issue.movedFromSessionName || ""
     ),
-    toSessionId: String(state.sessionId || ""),
-    toSessionName: String(
-      currentSession()?.name || ""
-    ),
+    toSessionId: targetSessionId,
+    toSessionName: targetSessionName,
     movedAt: timestampToIso(issue.movedAt),
     movedAtLabel: formatHistoryDate(issue.movedAt),
     movedBy: {
@@ -3357,19 +3638,77 @@ function issueListItemHtml(issue) {
   `;
 }
 
-function renderIssueGroup(title, issues, className) {
-  if (!issues.length) return "";
+function renderIssueGroup(
+  title,
+  sourceIssues,
+  filteredIssues,
+  className,
+  filterKey
+) {
+  if (!sourceIssues.length) return "";
+
+  const options =
+    gitLabStatusFilterOptions(sourceIssues);
+
+  let selected =
+    issueGitLabStatusFilters[filterKey]
+    ||"all";
+
+  if (
+    selected !== "all"
+    &&!options.includes(selected)
+  ) {
+    selected = "all";
+    issueGitLabStatusFilters[filterKey] =
+      "all";
+  }
+
+  const filterOptions = [
+    '<option value="all">Все статусы GitLab</option>',
+    ...options.map(value=>`
+      <option
+        value="${escapeHtml(value)}"
+        ${value===selected ? "selected" : ""}
+      >
+        ${escapeHtml(
+          gitLabStatusFilterLabel(value)
+        )}
+      </option>
+    `)
+  ].join("");
+
+  const countText =
+    filteredIssues.length === sourceIssues.length
+      ?String(sourceIssues.length)
+      :`${filteredIssues.length}/${sourceIssues.length}`;
 
   return `
     <section class="issue-list-group ${className}">
       <div class="issue-list-group-title">
-        <span>${escapeHtml(title)}</span>
-        <span class="issue-list-group-count">
-          ${issues.length}
-        </span>
+        <div class="issue-list-group-heading">
+          <span>${escapeHtml(title)}</span>
+          <span class="issue-list-group-count">
+            ${escapeHtml(countText)}
+          </span>
+        </div>
+
+        <select
+          class="issue-gitlab-status-filter"
+          data-issue-status-filter="${escapeHtml(filterKey)}"
+          aria-label="Фильтр ${escapeHtml(title)} по статусу GitLab"
+        >
+          ${filterOptions}
+        </select>
       </div>
+
       <div class="issue-list-group-items">
-        ${issues.map(issueListItemHtml).join("")}
+        ${
+          filteredIssues.length
+            ?filteredIssues
+              .map(issueListItemHtml)
+              .join("")
+            :'<div class="issue-filter-empty">Нет задач с выбранным статусом</div>'
+        }
       </div>
     </section>
   `;
@@ -3378,6 +3717,7 @@ function renderIssueGroup(title, issues, className) {
 function renderIssues() {
   const root = $("issueList");
 
+  renderTaskStatusesRefreshButton();
   pruneVotingIssueSelection();
 
   if (!state.issues.length) {
@@ -3395,18 +3735,64 @@ function renderIssues() {
     issue => issue.status === "estimated"
   );
 
+  const filteredActiveIssues =
+    activeIssues.filter(
+      issue=>issueMatchesGitLabStatusFilter(
+        issue,
+        issueGitLabStatusFilters.active
+      )
+    );
+
+  const filteredEstimatedIssues =
+    estimatedIssues.filter(
+      issue=>issueMatchesGitLabStatusFilter(
+        issue,
+        issueGitLabStatusFilters.estimated
+      )
+    );
+
   root.innerHTML = [
     renderIssueGroup(
       "Активные",
       activeIssues,
-      "active-issues"
+      filteredActiveIssues,
+      "active-issues",
+      "active"
     ),
     renderIssueGroup(
       "Оценённые",
       estimatedIssues,
-      "estimated-issues"
+      filteredEstimatedIssues,
+      "estimated-issues",
+      "estimated"
     )
   ].join("");
+
+  root.querySelectorAll(
+    "[data-issue-status-filter]"
+  ).forEach(select=>{
+    select.addEventListener(
+      "change",
+      event=>{
+        const key=String(
+          event.currentTarget
+            .dataset.issueStatusFilter
+          ||""
+        ).trim();
+
+        if(
+          !["active","estimated"].includes(key)
+        ){
+          return;
+        }
+
+        issueGitLabStatusFilters[key]=
+          event.currentTarget.value||"all";
+
+        renderIssues();
+      }
+    );
+  });
 
   root.querySelectorAll(
     "[data-voting-issue-id]"
@@ -4765,6 +5151,434 @@ async function issueAction(action) {
   }
 }
 
+function latestIssueEstimateInfo(
+  issue,
+  sourceSessionId = state.sessionId,
+  sourceSessionName = currentSession()?.name || ""
+) {
+  if (!issue) return null;
+
+  const currentEstimate = Number(issue.finalEstimate);
+
+  if (
+    Number.isFinite(currentEstimate)
+    && currentEstimate > 0
+    && isValidDevelopmentArea(issue.estimatedRole)
+  ) {
+    return {
+      finalEstimate: currentEstimate,
+      estimatedRole: issue.estimatedRole,
+      estimateVersion: Math.max(
+        1,
+        Number(issue.estimateVersion) || 1
+      ),
+      finalizedAt: issue.finalizedAt || null,
+      finalizedByUid: issue.finalizedByUid || null,
+      finalizedByEmail: issue.finalizedByEmail || null,
+      finalizedByDisplayName:
+        issue.finalizedByDisplayName || null,
+      sourceSessionId: sourceSessionId || null,
+      sourceSessionName: sourceSessionName || ""
+    };
+  }
+
+  const previous =
+    issue.previousEstimate
+    && typeof issue.previousEstimate === "object"
+      ? issue.previousEstimate
+      : null;
+
+  const previousValue = Number(
+    previous?.finalEstimate
+  );
+
+  if (
+    Number.isFinite(previousValue)
+    && previousValue > 0
+    && isValidDevelopmentArea(
+      previous?.estimatedRole
+      || issue.estimatedRole
+    )
+  ) {
+    return {
+      finalEstimate: previousValue,
+      estimatedRole:
+        previous.estimatedRole || issue.estimatedRole,
+      estimateVersion: Math.max(
+        1,
+        Number(
+          previous.estimateVersion
+          || issue.estimateVersion
+        ) || 1
+      ),
+      finalizedAt: previous.finalizedAt || null,
+      finalizedByUid:
+        previous.finalizedByUid || null,
+      finalizedByEmail:
+        previous.finalizedByEmail || null,
+      finalizedByDisplayName:
+        previous.finalizedByDisplayName || null,
+      sourceSessionId:
+        previous.sourceSessionId
+        || sourceSessionId
+        || null,
+      sourceSessionName:
+        previous.sourceSessionName
+        || sourceSessionName
+        || ""
+    };
+  }
+
+  return null;
+}
+
+function bulkMoveMode() {
+  return (
+    document.querySelector(
+      'input[name="bulkMoveMode"]:checked'
+    )?.value
+    || "reestimate"
+  );
+}
+
+function bulkMoveIssueAvailability(
+  issue,
+  mode = bulkMoveMode()
+) {
+  if (!issue) {
+    return {
+      available: false,
+      reason: "Задача не найдена"
+    };
+  }
+
+  if (issue.moveState === "copying") {
+    return {
+      available: false,
+      reason: "Перенос уже выполняется"
+    };
+  }
+
+  if (issue.status === "voting") {
+    return {
+      available: false,
+      reason: "Идёт голосование"
+    };
+  }
+
+  if (
+    mode === "reuse"
+    && !latestIssueEstimateInfo(issue)
+  ) {
+    return {
+      available: false,
+      reason: "Нет зафиксированной оценки"
+    };
+  }
+
+  return {
+    available: true,
+    reason: ""
+  };
+}
+
+function bulkMoveCandidateIssues() {
+  return state.issues.filter(
+    issue => issue.moveState !== "copying"
+  );
+}
+
+function pruneBulkMoveSelection() {
+  const mode = bulkMoveMode();
+
+  for (const issueId of selectedBulkMoveIssueIds) {
+    const issue = state.issues.find(
+      item => item.id === issueId
+    );
+
+    if (
+      !bulkMoveIssueAvailability(
+        issue,
+        mode
+      ).available
+    ) {
+      selectedBulkMoveIssueIds.delete(issueId);
+    }
+  }
+}
+
+function renderBulkMoveIssueList() {
+  const root = $("bulkMoveIssueList");
+  const count = $("bulkMoveSelectedCount");
+  const hint = $("bulkMoveEligibilityHint");
+  const confirmButton = $("confirmBulkMoveIssueBtn");
+  const selectAllButton = $("bulkMoveSelectAllBtn");
+
+  if (
+    !root
+    || !count
+    || !hint
+    || !confirmButton
+    || !selectAllButton
+  ) {
+    return;
+  }
+
+  pruneBulkMoveSelection();
+
+  const mode = bulkMoveMode();
+  const issues = bulkMoveCandidateIssues();
+
+  const availableIssues = issues.filter(
+    issue =>
+      bulkMoveIssueAvailability(
+        issue,
+        mode
+      ).available
+  );
+
+  const selectedCount =
+    selectedBulkMoveIssueIds.size;
+
+  const allAvailableSelected =
+    availableIssues.length > 0
+    && availableIssues.every(
+      issue =>
+        selectedBulkMoveIssueIds.has(issue.id)
+    );
+
+  count.textContent = String(selectedCount);
+
+  hint.textContent =
+    mode === "reuse"
+      ? `Доступно без переоценки: ${availableIssues.length} из ${issues.length}`
+      : `Доступно для переноса: ${availableIssues.length} из ${issues.length}`;
+
+  selectAllButton.textContent =
+    allAvailableSelected
+      ? "Снять выбор"
+      : "Выбрать все доступные";
+
+  selectAllButton.disabled =
+    bulkMoveInProgress
+    || availableIssues.length === 0;
+
+  const hasTarget = Boolean(
+    $("bulkMoveTargetSession")?.value
+  );
+
+  confirmButton.disabled =
+    bulkMoveInProgress
+    || selectedCount === 0
+    || !hasTarget;
+
+  confirmButton.textContent =
+    bulkMoveInProgress
+      ? "Перенос…"
+      : selectedCount
+        ? `Перенести · ${selectedCount}`
+        : "Перенести";
+
+  root.innerHTML = issues.length
+    ? issues.map(issue => {
+        const availability =
+          bulkMoveIssueAvailability(
+            issue,
+            mode
+          );
+
+        const selected =
+          availability.available
+          && selectedBulkMoveIssueIds.has(issue.id);
+
+        const lastEstimate =
+          latestIssueEstimateInfo(issue);
+
+        const gitlabStatus =
+          issueGitLabWorkflowStatus(issue);
+
+        const metaParts = [
+          issueDisplayStatusText(issue),
+          gitlabStatus === "__missing__"
+            ? "GitLab: статус не указан"
+            : `GitLab: ${gitlabStatus}`,
+          lastEstimate
+            ? `Последняя оценка: ${lastEstimate.finalEstimate} ч.д.`
+            : "Оценки ещё не было"
+        ];
+
+        if (
+          !availability.available
+          && availability.reason
+        ) {
+          metaParts.push(availability.reason);
+        }
+
+        return `
+          <label
+            class="bulk-move-issue-row ${
+              availability.available
+                ? ""
+                : "disabled"
+            }"
+          >
+            <input
+              type="checkbox"
+              data-bulk-move-issue-id="${escapeHtml(issue.id)}"
+              ${selected ? "checked" : ""}
+              ${availability.available ? "" : "disabled"}
+            >
+
+            <span class="bulk-move-issue-body">
+              <strong>
+                ${escapeHtml(
+                  issue.title
+                  || "Задача без названия"
+                )}
+              </strong>
+              <small>
+                ${escapeHtml(metaParts.join(" · "))}
+              </small>
+            </span>
+          </label>
+        `;
+      }).join("")
+    : '<div class="empty-state">В текущей сессии нет задач.</div>';
+
+  root.querySelectorAll(
+    "[data-bulk-move-issue-id]"
+  ).forEach(checkbox => {
+    checkbox.addEventListener(
+      "change",
+      event => {
+        const issueId = String(
+          event.currentTarget
+            .dataset.bulkMoveIssueId
+          || ""
+        ).trim();
+
+        if (!issueId) return;
+
+        if (event.currentTarget.checked) {
+          selectedBulkMoveIssueIds.add(issueId);
+        } else {
+          selectedBulkMoveIssueIds.delete(issueId);
+        }
+
+        renderBulkMoveIssueList();
+      }
+    );
+  });
+}
+
+function handleBulkMoveModeChange() {
+  pruneBulkMoveSelection();
+  setFormMessage($("bulkMoveIssueMessage"));
+  renderBulkMoveIssueList();
+}
+
+function toggleSelectAllBulkMoveIssues() {
+  if (bulkMoveInProgress) return;
+
+  const mode = bulkMoveMode();
+
+  const availableIssues =
+    bulkMoveCandidateIssues().filter(
+      issue =>
+        bulkMoveIssueAvailability(
+          issue,
+          mode
+        ).available
+    );
+
+  const allSelected =
+    availableIssues.length > 0
+    && availableIssues.every(
+      issue =>
+        selectedBulkMoveIssueIds.has(issue.id)
+    );
+
+  for (const issue of availableIssues) {
+    if (allSelected) {
+      selectedBulkMoveIssueIds.delete(issue.id);
+    } else {
+      selectedBulkMoveIssueIds.add(issue.id);
+    }
+  }
+
+  renderBulkMoveIssueList();
+}
+
+function openBulkMoveIssueDialog() {
+  if (
+    !canManageEstimation()
+    || !state.sessionId
+  ) {
+    return;
+  }
+
+  const targetSessions =
+    state.sessions.filter(
+      session =>
+        session.id !== state.sessionId
+    );
+
+  selectedBulkMoveIssueIds.clear();
+  bulkMoveInProgress = false;
+
+  const reestimateRadio =
+    document.querySelector(
+      'input[name="bulkMoveMode"][value="reestimate"]'
+    );
+
+  if (reestimateRadio) {
+    reestimateRadio.checked = true;
+  }
+
+  $("bulkMoveSourceSession").textContent =
+    currentSession()?.name
+    || state.sessionId
+    || "";
+
+  $("bulkMoveTargetSession").innerHTML =
+    targetSessions.length
+      ? targetSessions.map(session => `
+          <option value="${escapeHtml(session.id)}">
+            ${escapeHtml(session.name)}
+            ${
+              session.iteration
+                ? ` — ${escapeHtml(session.iteration)}`
+                : ""
+            }
+            ${
+              session.status === "finished"
+                ? " (завершена)"
+                : ""
+            }
+          </option>
+        `).join("")
+      : '<option value="">Нет другой сессии в этой команде</option>';
+
+  $("bulkMoveTargetSession").disabled =
+    targetSessions.length === 0;
+
+  $("bulkMoveTargetSession").onchange =
+    () => renderBulkMoveIssueList();
+
+  setFormMessage(
+    $("bulkMoveIssueMessage"),
+    targetSessions.length
+      ? "Выберите задачи и режим переноса."
+      : "Сначала создайте ещё одну сессию в этой команде.",
+    targetSessions.length
+      ? "info"
+      : "error"
+  );
+
+  renderBulkMoveIssueList();
+  openDialog("bulkMoveIssueDialog");
+}
+
 function openMoveIssueDialog() {
   if (!canManageEstimation() || !state.issue) return;
 
@@ -4862,15 +5676,103 @@ async function verifyMovedCollections(targetIssueRef, expected) {
   }
 }
 
-async function moveIssueToSession() {
-  if (!canManageEstimation() || !state.issue) return;
+function setMoveProgressMessage(
+  messageTarget,
+  text,
+  type = "info"
+) {
+  if (!messageTarget) return;
 
-  const targetSessionId = $("moveIssueTargetSession").value;
-  const messageTarget = $("moveIssueMessage");
+  setFormMessage(
+    messageTarget,
+    text,
+    type
+  );
+}
 
-  if (!targetSessionId || targetSessionId === state.sessionId) {
-    setFormMessage(messageTarget, "Выберите другую сессию.");
-    return;
+async function syncMovedIssueToTeamCalculator(
+  targetIssueRef,
+  targetSession
+) {
+  const api = window.TeamCalculatorIntegration;
+
+  if (
+    !api
+    || typeof api.syncPayload !== "function"
+  ) {
+    return {
+      ok: false,
+      skipped: true,
+      error:
+        "Модуль интеграции Team_calculator ещё не готов."
+    };
+  }
+
+  const targetSnapshot =
+    await getDoc(targetIssueRef);
+
+  if (!targetSnapshot.exists()) {
+    return {
+      ok: false,
+      skipped: true,
+      error:
+        "Перенесённая задача не найдена для синхронизации."
+    };
+  }
+
+  const issue = {
+    id: targetIssueRef.id,
+    ...targetSnapshot.data()
+  };
+
+  const payload =
+    buildTeamCalendarEstimatePayload(
+      issue,
+      {
+        sessionId: targetSession.id,
+        sessionName: targetSession.name || ""
+      }
+    );
+
+  if (!payload) {
+    return {
+      ok: false,
+      skipped: true,
+      error:
+        "Для задачи пока нет данных для Team_calculator."
+    };
+  }
+
+  return api.syncPayload(payload);
+}
+
+async function moveIssueRecordToSession({
+  issueId,
+  targetSessionId,
+  reestimate = true,
+  messageTarget = null,
+  progressPrefix = ""
+}) {
+  if (
+    !canManageEstimation()
+    || !issueId
+    || !targetSessionId
+  ) {
+    throw new Error(
+      "Недостаточно данных для переноса задачи."
+    );
+  }
+
+  const sourceTeamId = state.teamId;
+  const sourceSessionId = state.sessionId;
+  const sourceSession = currentSession();
+
+  if (
+    !sourceTeamId
+    || !sourceSessionId
+    || targetSessionId === sourceSessionId
+  ) {
+    throw new Error("Выберите другую сессию.");
   }
 
   const targetSession = state.sessions.find(
@@ -4878,23 +5780,10 @@ async function moveIssueToSession() {
   );
 
   if (!targetSession) {
-    setFormMessage(messageTarget, "Выбранная сессия не найдена.");
-    return;
-  }
-
-  if (state.issue.status === "voting") {
-    setFormMessage(
-      messageTarget,
-      "Нельзя переносить задачу во время активного голосования. Сначала раскройте оценки.",
-      "error"
+    throw new Error(
+      "Выбранная сессия не найдена."
     );
-    return;
   }
-
-  const sourceTeamId = state.teamId;
-  const sourceSessionId = state.sessionId;
-  const sourceSession = currentSession();
-  const issueId = state.issue.id;
 
   const sourceIssueRef = doc(
     db,
@@ -4910,318 +5799,592 @@ async function moveIssueToSession() {
     "issues", issueId
   );
 
+  let targetCreated = false;
+  let moveStage = "чтение исходной задачи";
+
+  const progress = text =>
+    setMoveProgressMessage(
+      messageTarget,
+      progressPrefix
+        ? `${progressPrefix}: ${text}`
+        : text,
+      "info"
+    );
+
+  try {
+    progress("читаем задачу и историю");
+
+    const sourceSnapshot =
+      await getDoc(sourceIssueRef);
+
+    if (!sourceSnapshot.exists()) {
+      throw new Error(
+        "Исходная задача больше не существует."
+      );
+    }
+
+    const sourceData = sourceSnapshot.data();
+
+    if (sourceData.status === "voting") {
+      throw new Error(
+        "Нельзя переносить задачу во время активного голосования."
+      );
+    }
+
+    const previousEstimate =
+      latestIssueEstimateInfo(
+        sourceData,
+        sourceSessionId,
+        sourceSession?.name || ""
+      );
+
+    if (
+      !reestimate
+      && !previousEstimate
+    ) {
+      throw new Error(
+        "Для переноса без переоценки у задачи должна быть последняя зафиксированная оценка."
+      );
+    }
+
+    moveStage = "проверка целевой сессии";
+
+    const existingTarget =
+      await getDoc(targetIssueRef);
+
+    if (existingTarget.exists()) {
+      const existingData =
+        existingTarget.data();
+
+      if (
+        existingData.moveState === "copying"
+        && existingData.movedFromSessionId
+          === sourceSessionId
+      ) {
+        await removeIncompleteMovedCopy(
+          targetSessionId,
+          issueId
+        );
+      } else {
+        throw new Error(
+          "В целевой сессии уже существует задача с таким идентификатором."
+        );
+      }
+    }
+
+    const sourceVotesRef =
+      collection(sourceIssueRef, "votes");
+
+    const sourceStatusesRef =
+      collection(sourceIssueRef, "vote_status");
+
+    const sourceRoundsRef =
+      collection(sourceIssueRef, "rounds");
+
+    moveStage =
+      "чтение голосов и истории";
+
+    const [
+      votes,
+      statuses,
+      rounds,
+      targetIssuesSnapshot
+    ] = await Promise.all([
+      readCollectionDocuments(
+        sourceVotesRef
+      ),
+      readCollectionDocuments(
+        sourceStatusesRef
+      ),
+      readCollectionDocuments(
+        sourceRoundsRef
+      ),
+      getDocs(
+        collection(
+          db,
+          "teams", sourceTeamId,
+          "sessions", targetSessionId,
+          "issues"
+        )
+      )
+    ]);
+
+    const targetSortOrder =
+      targetIssuesSnapshot.docs.reduce(
+        (maximum, item) =>
+          Math.max(
+            maximum,
+            Number(
+              item.data().sortOrder || 0
+            )
+          ),
+        0
+      ) + 10;
+
+    const actor =
+      currentActorSnapshot();
+
+    const hasPreviousRoundData =
+      sourceData.status !== "pending"
+      || votes.length > 0
+      || statuses.length > 0
+      || rounds.length > 0
+      || sourceData.finalEstimate != null;
+
+    const reestimateRound =
+      hasPreviousRoundData
+        ? Number(
+            sourceData.currentRound || 1
+          ) + 1
+        : Number(
+            sourceData.currentRound || 1
+          );
+
+    const modeFields =
+      reestimate
+        ? {
+            status: "pending",
+            currentRound: reestimateRound,
+            finalEstimate: null,
+            finalizedAt: null,
+            finalizedByUid: null,
+            finalizedByEmail: null,
+            finalizedByDisplayName: null,
+
+            reestimateRequired: true,
+            reestimateReason: "transferred",
+            reestimateRequestedAt:
+              serverTimestamp(),
+            reestimateRequestedByUid:
+              actor.uid,
+            reestimateRequestedByEmail:
+              actor.email,
+            reestimateRequestedByDisplayName:
+              actor.displayName,
+
+            estimateReusedAfterTransfer:
+              false
+          }
+        : {
+            status: "estimated",
+            currentRound: Number(
+              sourceData.currentRound || 1
+            ),
+            finalEstimate:
+              previousEstimate.finalEstimate,
+            estimatedRole:
+              previousEstimate.estimatedRole,
+            estimateVersion:
+              previousEstimate.estimateVersion,
+            finalizedAt:
+              previousEstimate.finalizedAt,
+            finalizedByUid:
+              previousEstimate.finalizedByUid,
+            finalizedByEmail:
+              previousEstimate.finalizedByEmail,
+            finalizedByDisplayName:
+              previousEstimate
+                .finalizedByDisplayName,
+
+            reestimateRequired: false,
+            reestimateReason: null,
+            reestimateRequestedAt: null,
+            reestimateRequestedByUid: null,
+            reestimateRequestedByEmail: null,
+            reestimateRequestedByDisplayName:
+              null,
+
+            estimateReusedAfterTransfer: true,
+            estimateReusedAt:
+              serverTimestamp(),
+            estimateReusedByUid:
+              actor.uid,
+            estimateReusedByEmail:
+              actor.email,
+            estimateReusedByDisplayName:
+              actor.displayName,
+            estimateReuseSourceSessionId:
+              sourceSessionId,
+            estimateReuseSourceSessionName:
+              sourceSession?.name || ""
+          };
+
+    progress(
+      reestimate
+        ? "создаём копию на переоценку"
+        : "создаём копию с последней оценкой"
+    );
+
+    moveStage = "создание копии задачи";
+
+    await setDoc(
+      targetIssueRef,
+      {
+        ...sourceData,
+        sortOrder: targetSortOrder,
+        ...modeFields,
+        previousEstimate,
+
+        moveMode:
+          reestimate
+            ? "reestimate"
+            : "reuse_estimate",
+        moveState: "copying",
+        movedFromSessionId:
+          sourceSessionId,
+        movedFromSessionName:
+          sourceSession?.name || "",
+        movedByUid: actor.uid,
+        movedByEmail: actor.email,
+        movedByDisplayName:
+          actor.displayName,
+        moveStartedAt:
+          serverTimestamp(),
+        updatedAt:
+          serverTimestamp()
+      }
+    );
+
+    targetCreated = true;
+
+    moveStage = "копирование голосов";
+
+    await writeDocumentsInChunks(
+      collection(targetIssueRef, "votes"),
+      votes
+    );
+
+    moveStage =
+      "копирование статусов голосования";
+
+    await writeDocumentsInChunks(
+      collection(
+        targetIssueRef,
+        "vote_status"
+      ),
+      statuses
+    );
+
+    moveStage =
+      "копирование истории раундов";
+
+    await writeDocumentsInChunks(
+      collection(targetIssueRef, "rounds"),
+      rounds
+    );
+
+    progress("проверяем созданную копию");
+
+    moveStage =
+      "проверка созданной копии";
+
+    await verifyMovedCollections(
+      targetIssueRef,
+      {
+        votes: votes.length,
+        statuses: statuses.length,
+        rounds: rounds.length
+      }
+    );
+
+    const sourceBeforeFinal =
+      await getDoc(sourceIssueRef);
+
+    if (!sourceBeforeFinal.exists()) {
+      throw new Error(
+        "Исходная задача была удалена во время переноса."
+      );
+    }
+
+    const currentSourceData =
+      sourceBeforeFinal.data();
+
+    if (
+      currentSourceData.status
+        !== sourceData.status
+      || Number(
+          currentSourceData.currentRound
+        ) !== Number(
+          sourceData.currentRound
+        )
+      || timestampValue(
+          currentSourceData.updatedAt
+        ) !== timestampValue(
+          sourceData.updatedAt
+        )
+    ) {
+      throw new Error(
+        "Задача изменилась во время переноса. Исходная задача сохранена; повторите перенос."
+      );
+    }
+
+    progress("завершаем перенос");
+
+    const redirectRef =
+      issueRedirectRef(
+        sourceTeamId,
+        sourceSessionId,
+        issueId
+      );
+
+    const sourceAuditRef =
+      createIssueAuditRef(
+        sourceTeamId,
+        sourceSessionId
+      );
+
+    const targetAuditRef =
+      createIssueAuditRef(
+        sourceTeamId,
+        targetSessionId
+      );
+
+    const finalBatch = writeBatch(db);
+
+    finalBatch.update(
+      targetIssueRef,
+      {
+        moveState: "complete",
+        movedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }
+    );
+
+    finalBatch.set(
+      redirectRef,
+      {
+        sourceSessionId,
+        sourceIssueId: issueId,
+        targetSessionId,
+        targetIssueId: issueId,
+        moveMode:
+          reestimate
+            ? "reestimate"
+            : "reuse_estimate",
+        movedByUid: actor.uid,
+        movedByEmail: actor.email,
+        movedByDisplayName:
+          actor.displayName,
+        movedAt: serverTimestamp()
+      }
+    );
+
+    const auditSnapshot = {
+      title: sourceData.title || "",
+      moveMode:
+        reestimate
+          ? "reestimate"
+          : "reuse_estimate",
+      reusedFinalEstimate:
+        reestimate
+          ? null
+          : previousEstimate
+            ?.finalEstimate
+            ?? null,
+      reusedEstimateVersion:
+        reestimate
+          ? null
+          : previousEstimate
+            ?.estimateVersion
+            ?? null
+    };
+
+    finalBatch.set(
+      sourceAuditRef,
+      {
+        ...buildIssueAuditEvent({
+          action: "moved_out",
+          issueId,
+          issueTitle:
+            sourceData.title
+            || "Задача без названия",
+          snapshot: {
+            ...auditSnapshot,
+            targetSessionId,
+            targetSessionName:
+              targetSession.name || ""
+          }
+        }),
+        sourceSessionId,
+        sourceSessionName:
+          sourceSession?.name || "",
+        targetSessionId,
+        targetSessionName:
+          targetSession.name || ""
+      }
+    );
+
+    finalBatch.set(
+      targetAuditRef,
+      {
+        ...buildIssueAuditEvent({
+          action: "moved_in",
+          issueId,
+          issueTitle:
+            sourceData.title
+            || "Задача без названия",
+          snapshot: {
+            ...auditSnapshot,
+            sourceSessionId,
+            sourceSessionName:
+              sourceSession?.name || ""
+          }
+        }),
+        sourceSessionId,
+        sourceSessionName:
+          sourceSession?.name || "",
+        targetSessionId,
+        targetSessionName:
+          targetSession.name || ""
+      }
+    );
+
+    finalBatch.delete(sourceIssueRef);
+
+    moveStage =
+      "финальное завершение переноса";
+
+    await finalBatch.commit();
+
+    try {
+      await deleteCollectionRefs(
+        sourceVotesRef
+      );
+      await deleteCollectionRefs(
+        sourceStatusesRef
+      );
+      await deleteCollectionRefs(
+        sourceRoundsRef
+      );
+    } catch (cleanupError) {
+      console.warn(
+        "Перенос завершён, но не все технические остатки удалены",
+        cleanupError
+      );
+    }
+
+    let calculatorSync = null;
+
+    try {
+      calculatorSync =
+        await syncMovedIssueToTeamCalculator(
+          targetIssueRef,
+          targetSession
+        );
+    } catch (syncError) {
+      calculatorSync = {
+        ok: false,
+        error: String(
+          syncError?.message || syncError
+        )
+      };
+
+      console.error(
+        "Задача перенесена, но не удалось сразу синхронизировать Team_calculator",
+        {
+          issueId,
+          targetSessionId,
+          error: syncError
+        }
+      );
+    }
+
+    return {
+      issueId,
+      issueTitle:
+        sourceData.title
+        || "Задача без названия",
+      targetSession,
+      targetIssueRef,
+      reestimate,
+      previousEstimate,
+      calculatorSync
+    };
+  } catch (error) {
+    error.moveStage =
+      error.moveStage || moveStage;
+
+    if (targetCreated) {
+      await removeIncompleteMovedCopy(
+        targetSessionId,
+        issueId
+      );
+    }
+
+    throw error;
+  }
+}
+
+function movePermissionErrorMessage(
+  error,
+  moveStage
+) {
+  const permissionDenied = [
+    "permission-denied",
+    "firestore/permission-denied"
+  ].includes(error?.code);
+
+  if (!permissionDenied) {
+    return null;
+  }
+
+  return (
+    "Firestore отклонил операцию на этапе «"
+    + moveStage
+    + "». Проверьте актуальные Firestore Rules. "
+    + "Исходная задача не удалена."
+  );
+}
+
+async function moveIssueToSession() {
+  if (
+    !canManageEstimation()
+    || !state.issue
+  ) {
+    return;
+  }
+
+  const targetSessionId =
+    $("moveIssueTargetSession").value;
+
+  const messageTarget =
+    $("moveIssueMessage");
+
+  if (
+    !targetSessionId
+    || targetSessionId === state.sessionId
+  ) {
+    setFormMessage(
+      messageTarget,
+      "Выберите другую сессию."
+    );
+    return;
+  }
+
+  if (state.issue.status === "voting") {
+    setFormMessage(
+      messageTarget,
+      "Нельзя переносить задачу во время активного голосования. Сначала раскройте оценки.",
+      "error"
+    );
+    return;
+  }
+
+  const sourceTeamId = state.teamId;
+  const issueId = state.issue.id;
+
   await withButton(
     $("confirmMoveIssueBtn"),
     "Перенос...",
     async () => {
-      let targetCreated = false;
-      let moveStage = "чтение исходной задачи";
-
       try {
-        setFormMessage(
-          messageTarget,
-          "Читаем задачу и всю историю. Исходная задача пока остаётся без изменений.",
-          "info"
-        );
-
-        moveStage = "чтение исходной задачи";
-        const sourceSnapshot = await getDoc(sourceIssueRef);
-
-        if (!sourceSnapshot.exists()) {
-          throw new Error("Исходная задача больше не существует.");
-        }
-
-        const sourceData = sourceSnapshot.data();
-
-        if (sourceData.status === "voting") {
-          throw new Error(
-            "Задача перешла в режим голосования. Сначала раскройте оценки."
-          );
-        }
-
-        moveStage = "проверка целевой сессии";
-        const existingTarget = await getDoc(targetIssueRef);
-
-        if (existingTarget.exists()) {
-          const existingData = existingTarget.data();
-
-          if (
-            existingData.moveState === "copying" &&
-            existingData.movedFromSessionId === sourceSessionId
-          ) {
-            await removeIncompleteMovedCopy(targetSessionId, issueId);
-          } else {
-            throw new Error(
-              "В целевой сессии уже существует задача с таким идентификатором."
-            );
-          }
-        }
-
-        const sourceVotesRef = collection(sourceIssueRef, "votes");
-        const sourceStatusesRef = collection(sourceIssueRef, "vote_status");
-        const sourceRoundsRef = collection(sourceIssueRef, "rounds");
-
-        moveStage = "чтение голосов и истории";
-        const [votes, statuses, rounds, targetIssuesSnapshot] =
-          await Promise.all([
-            readCollectionDocuments(sourceVotesRef),
-            readCollectionDocuments(sourceStatusesRef),
-            readCollectionDocuments(sourceRoundsRef),
-            getDocs(
-              collection(
-                db,
-                "teams", sourceTeamId,
-                "sessions", targetSessionId,
-                "issues"
-              )
-            )
-          ]);
-
-        const targetSortOrder = targetIssuesSnapshot.docs.reduce(
-          (maximum, item) =>
-            Math.max(
-              maximum,
-              Number(item.data().sortOrder || 0)
-            ),
-          0
-        ) + 10;
-
-        const actor = currentActorSnapshot();
-
-        const previousEstimate =
-          sourceData.finalEstimate != null
-            ? {
-                finalEstimate:
-                  Number(sourceData.finalEstimate),
-                estimatedRole:
-                  sourceData.estimatedRole || null,
-                estimateVersion:
-                  Number(sourceData.estimateVersion || 0),
-                finalizedAt:
-                  sourceData.finalizedAt || null,
-                finalizedByUid:
-                  sourceData.finalizedByUid || null,
-                finalizedByEmail:
-                  sourceData.finalizedByEmail || null,
-                finalizedByDisplayName:
-                  sourceData.finalizedByDisplayName || null,
-                sourceSessionId,
-                sourceSessionName:
-                  sourceSession?.name || ""
-              }
-            : (
-                sourceData.previousEstimate
-                && typeof sourceData.previousEstimate === "object"
-                  ? sourceData.previousEstimate
-                  : null
-              );
-
-        const hasPreviousRoundData =
-          sourceData.status !== "pending"
-          || votes.length > 0
-          || statuses.length > 0
-          || rounds.length > 0
-          || sourceData.finalEstimate != null;
-
-        const reestimateRound =
-          hasPreviousRoundData
-            ? Number(sourceData.currentRound || 1) + 1
-            : Number(sourceData.currentRound || 1);
-
-        setFormMessage(
-          messageTarget,
-          "Создаём проверяемую копию в новой сессии и переводим задачу в список на переоценку. Исходная задача всё ещё остаётся на месте.",
-          "info"
-        );
-
-        moveStage = "создание копии задачи";
-        await setDoc(targetIssueRef, {
-          ...sourceData,
-          sortOrder: targetSortOrder,
-
-          status: "pending",
-          currentRound: reestimateRound,
-          finalEstimate: null,
-          finalizedAt: null,
-          finalizedByUid: null,
-          finalizedByEmail: null,
-          finalizedByDisplayName: null,
-
-          reestimateRequired: true,
-          reestimateReason: "transferred",
-          reestimateRequestedAt:
-            serverTimestamp(),
-          reestimateRequestedByUid:
-            actor.uid,
-          reestimateRequestedByEmail:
-            actor.email,
-          reestimateRequestedByDisplayName:
-            actor.displayName,
-          previousEstimate,
-
-          moveState: "copying",
-          movedFromSessionId: sourceSessionId,
-          movedFromSessionName: sourceSession?.name || "",
-          movedByUid: actor.uid,
-          movedByEmail: actor.email,
-          movedByDisplayName: actor.displayName,
-          moveStartedAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-
-        targetCreated = true;
-
-        moveStage = "копирование голосов";
-        await writeDocumentsInChunks(
-          collection(targetIssueRef, "votes"),
-          votes
-        );
-        moveStage = "копирование статусов голосования";
-        await writeDocumentsInChunks(
-          collection(targetIssueRef, "vote_status"),
-          statuses
-        );
-        moveStage = "копирование истории раундов";
-        await writeDocumentsInChunks(
-          collection(targetIssueRef, "rounds"),
-          rounds
-        );
-
-        setFormMessage(
-          messageTarget,
-          "Проверяем, что задача, голоса и история полностью скопированы.",
-          "info"
-        );
-
-        moveStage = "проверка созданной копии";
-        await verifyMovedCollections(targetIssueRef, {
-          votes: votes.length,
-          statuses: statuses.length,
-          rounds: rounds.length
-        });
-
-        // Проверяем, что исходную задачу не изменили во время копирования.
-        const sourceBeforeFinal = await getDoc(sourceIssueRef);
-
-        if (!sourceBeforeFinal.exists()) {
-          throw new Error(
-            "Исходная задача была удалена во время переноса."
-          );
-        }
-
-        const currentSourceData = sourceBeforeFinal.data();
-
-        if (
-          currentSourceData.status !== sourceData.status ||
-          Number(currentSourceData.currentRound) !== Number(sourceData.currentRound) ||
-          timestampValue(currentSourceData.updatedAt) !==
-            timestampValue(sourceData.updatedAt)
-        ) {
-          throw new Error(
-            "Задача изменилась во время переноса. Исходная задача сохранена; повторите перенос."
-          );
-        }
-
-        setFormMessage(
-          messageTarget,
-          "Копия проверена. Завершаем перенос и сохраняем старую ссылку.",
-          "info"
-        );
-
-        const redirectRef = issueRedirectRef(
-          sourceTeamId,
-          sourceSessionId,
-          issueId
-        );
-
-        const sourceAuditRef = createIssueAuditRef(
-          sourceTeamId,
-          sourceSessionId
-        );
-
-        const targetAuditRef = createIssueAuditRef(
-          sourceTeamId,
-          targetSessionId
-        );
-
-        const finalBatch = writeBatch(db);
-
-        finalBatch.update(targetIssueRef, {
-          moveState: "complete",
-          movedAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-
-        finalBatch.set(redirectRef, {
-          sourceSessionId,
-          sourceIssueId: issueId,
-          targetSessionId,
-          targetIssueId: issueId,
-          movedByUid: actor.uid,
-          movedByEmail: actor.email,
-          movedByDisplayName: actor.displayName,
-          movedAt: serverTimestamp()
-        });
-
-        finalBatch.set(
-          sourceAuditRef,
-          {
-            ...buildIssueAuditEvent({
-              action: "moved_out",
-              issueId,
-              issueTitle: sourceData.title || "Задача без названия",
-              snapshot: {
-                title: sourceData.title || "",
-                targetSessionId,
-                targetSessionName: targetSession.name || ""
-              }
-            }),
-            sourceSessionId,
-            sourceSessionName: sourceSession?.name || "",
+        const result =
+          await moveIssueRecordToSession({
+            issueId,
             targetSessionId,
-            targetSessionName: targetSession.name || ""
-          }
-        );
-
-        finalBatch.set(
-          targetAuditRef,
-          {
-            ...buildIssueAuditEvent({
-              action: "moved_in",
-              issueId,
-              issueTitle: sourceData.title || "Задача без названия",
-              snapshot: {
-                title: sourceData.title || "",
-                sourceSessionId,
-                sourceSessionName: sourceSession?.name || ""
-              }
-            }),
-            sourceSessionId,
-            sourceSessionName: sourceSession?.name || "",
-            targetSessionId,
-            targetSessionName: targetSession.name || ""
-          }
-        );
-
-        // Исходный документ удаляется только в одной атомарной операции
-        // после копирования и проверки всех вложенных коллекций.
-        finalBatch.delete(sourceIssueRef);
-
-        moveStage = "финальное завершение переноса";
-        await finalBatch.commit();
-
-        // Вложенные документы старой задачи теперь являются только
-        // техническими остатками. Их удаление не влияет на новую копию.
-        try {
-          await deleteCollectionRefs(sourceVotesRef);
-          await deleteCollectionRefs(sourceStatusesRef);
-          await deleteCollectionRefs(sourceRoundsRef);
-        } catch (cleanupError) {
-          console.warn(
-            "Перенос завершён, но не все технические остатки удалены",
-            cleanupError
-          );
-        }
+            reestimate: true,
+            messageTarget
+          });
 
         closeDialog("moveIssueDialog");
 
@@ -5231,63 +6394,291 @@ async function moveIssueToSession() {
           issueId
         };
 
-        const newUrl = new URL(window.location.href);
-        newUrl.hash = new URLSearchParams({
-          team: sourceTeamId,
-          session: targetSessionId,
-          issue: issueId
-        }).toString();
+        const newUrl =
+          new URL(window.location.href);
 
-        window.history.replaceState(null, "", newUrl.hash);
+        newUrl.hash =
+          new URLSearchParams({
+            team: sourceTeamId,
+            session: targetSessionId,
+            issue: issueId
+          }).toString();
+
+        window.history.replaceState(
+          null,
+          "",
+          newUrl.hash
+        );
+
         selectSession(targetSessionId);
 
         toast(
-          `Задача перенесена в сессию «${targetSession.name}». Все данные сохранены.`,
+          `Задача перенесена в сессию «${result.targetSession.name}». Требуется переоценка.`,
           "success",
           6000
         );
       } catch (error) {
-        const permissionDenied = [
-          "permission-denied",
-          "firestore/permission-denied"
-        ].includes(error?.code);
+        const permissionMessage =
+          movePermissionErrorMessage(
+            error,
+            error.moveStage
+            || "неизвестный этап"
+          );
 
-        if (permissionDenied) {
+        if (permissionMessage) {
           setFormMessage(
             messageTarget,
-            "Firestore отклонил операцию на этапе «"
-              + moveStage
-              + "». Проверьте, что опубликована версия правил "
-              + "с разрешением менеджеру читать votes для переноса "
-              + "неактивной задачи. Исходная задача не удалена.",
+            permissionMessage,
             "error"
           );
 
           console.error(
             "Перенос отклонён Firestore Rules",
-            {
-              moveStage,
-              teamId: sourceTeamId,
-              sourceSessionId,
-              targetSessionId,
-              issueId,
-              role: currentRole(),
-              error
-            }
+            error
           );
         } else {
-          handleError(error, messageTarget);
-        }
-
-        // До финального commit исходная задача не удаляется.
-        // Незавершённую скрытую копию стараемся удалить.
-        if (targetCreated) {
-          await removeIncompleteMovedCopy(targetSessionId, issueId);
+          handleError(
+            error,
+            messageTarget
+          );
         }
       }
     }
   );
 }
+
+async function moveSelectedIssuesToSession() {
+  if (
+    !canManageEstimation()
+    || bulkMoveInProgress
+  ) {
+    return;
+  }
+
+  const targetSessionId =
+    $("bulkMoveTargetSession").value;
+
+  const messageTarget =
+    $("bulkMoveIssueMessage");
+
+  if (
+    !targetSessionId
+    || targetSessionId === state.sessionId
+  ) {
+    setFormMessage(
+      messageTarget,
+      "Выберите другую сессию.",
+      "error"
+    );
+    return;
+  }
+
+  const targetSession =
+    state.sessions.find(
+      session =>
+        session.id === targetSessionId
+    );
+
+  if (!targetSession) {
+    setFormMessage(
+      messageTarget,
+      "Выбранная сессия не найдена.",
+      "error"
+    );
+    return;
+  }
+
+  const mode = bulkMoveMode();
+  const reestimate =
+    mode !== "reuse";
+
+  pruneBulkMoveSelection();
+
+  const selectedIssues =
+    state.issues.filter(
+      issue =>
+        selectedBulkMoveIssueIds.has(
+          issue.id
+        )
+    );
+
+  if (!selectedIssues.length) {
+    setFormMessage(
+      messageTarget,
+      "Выберите хотя бы одну задачу.",
+      "error"
+    );
+    renderBulkMoveIssueList();
+    return;
+  }
+
+  const unavailable =
+    selectedIssues.filter(
+      issue =>
+        !bulkMoveIssueAvailability(
+          issue,
+          mode
+        ).available
+    );
+
+  if (unavailable.length) {
+    setFormMessage(
+      messageTarget,
+      "Часть выбранных задач больше нельзя перенести в выбранном режиме. Обновите выбор.",
+      "error"
+    );
+    renderBulkMoveIssueList();
+    return;
+  }
+
+  const sourceTeamId = state.teamId;
+
+  bulkMoveInProgress = true;
+  renderBulkMoveIssueList();
+
+  let succeeded = 0;
+  let failed = 0;
+  let calculatorSyncWarnings = 0;
+  const failures = [];
+  let firstMovedIssueId = null;
+
+  try {
+    for (
+      let index = 0;
+      index < selectedIssues.length;
+      index += 1
+    ) {
+      const issue =
+        selectedIssues[index];
+
+      const prefix =
+        `${index + 1}/${selectedIssues.length} · ${issue.title}`;
+
+      try {
+        const result =
+          await moveIssueRecordToSession({
+            issueId: issue.id,
+            targetSessionId,
+            reestimate,
+            messageTarget,
+            progressPrefix: prefix
+          });
+
+        succeeded += 1;
+
+        firstMovedIssueId =
+          firstMovedIssueId || issue.id;
+
+        selectedBulkMoveIssueIds.delete(
+          issue.id
+        );
+
+        if (
+          result.calculatorSync
+          && result.calculatorSync.ok === false
+        ) {
+          calculatorSyncWarnings += 1;
+        }
+      } catch (error) {
+        failed += 1;
+
+        failures.push({
+          issueId: issue.id,
+          title:
+            issue.title
+            || "Задача без названия",
+          stage:
+            error.moveStage
+            || "неизвестный этап",
+          error: String(
+            error?.message || error
+          )
+        });
+
+        console.error(
+          "Ошибка массового переноса",
+          failures[failures.length - 1],
+          error
+        );
+      }
+    }
+
+    if (failed) {
+      const firstFailure = failures[0];
+
+      setFormMessage(
+        messageTarget,
+        `Перенесено: ${succeeded}. Ошибок: ${failed}. Первая ошибка: «${firstFailure.title}» — ${firstFailure.error}`,
+        "error"
+      );
+    } else {
+      setFormMessage(
+        messageTarget,
+        calculatorSyncWarnings
+          ? `Перенесено задач: ${succeeded}. Для ${calculatorSyncWarnings} задач Team_calculator не обновился сразу.`
+          : `Перенесено задач: ${succeeded}.`,
+        calculatorSyncWarnings
+          ? "info"
+          : "success"
+      );
+    }
+
+    if (succeeded > 0) {
+      closeDialog(
+        "bulkMoveIssueDialog"
+      );
+
+      if (firstMovedIssueId) {
+        pendingTaskLink = {
+          teamId: sourceTeamId,
+          sessionId: targetSessionId,
+          issueId: firstMovedIssueId
+        };
+
+        const newUrl =
+          new URL(window.location.href);
+
+        newUrl.hash =
+          new URLSearchParams({
+            team: sourceTeamId,
+            session: targetSessionId,
+            issue: firstMovedIssueId
+          }).toString();
+
+        window.history.replaceState(
+          null,
+          "",
+          newUrl.hash
+        );
+      }
+
+      selectSession(targetSessionId);
+
+      const modeLabel =
+        reestimate
+          ? "с переоценкой"
+          : "с последней оценкой";
+
+      toast(
+        failed
+          ? `Перенесено ${succeeded} из ${selectedIssues.length} задач ${modeLabel}. Ошибок: ${failed}.`
+          : `Перенесено ${succeeded} задач ${modeLabel}.`,
+        failed ? "error" : "success",
+        7000
+      );
+    }
+  } finally {
+    bulkMoveInProgress = false;
+
+    if (
+      $("bulkMoveIssueDialog")
+        ?.open
+    ) {
+      renderBulkMoveIssueList();
+    }
+  }
+}
+
 
 async function castVote(value) {
   if (
@@ -5655,7 +7046,10 @@ function timestampToIso(value) {
     : null;
 }
 
-function buildTeamCalendarEstimatePayload(issue = state.issue) {
+function buildTeamCalendarEstimatePayload(
+  issue = state.issue,
+  context = null
+) {
   if (!issue) return null;
   if (!isValidDevelopmentArea(issue.estimatedRole)) return null;
 
@@ -5748,10 +7142,22 @@ function buildTeamCalendarEstimatePayload(issue = state.issue) {
       name: issue.estimatedTeamName || currentTeam()?.name || ""
     },
     session: {
-      id: state.sessionId,
-      name: currentSession()?.name || ""
+      id:
+        context?.sessionId
+        || state.sessionId,
+      name:
+        context?.sessionName
+        || (
+          context?.sessionId === state.sessionId
+            ? currentSession()?.name
+            : ""
+        )
+        || ""
     },
-    transfer: issueTransferInfo(issue),
+    transfer: issueTransferInfo(
+      issue,
+      context
+    ),
     source: "team_poker"
   };
 }

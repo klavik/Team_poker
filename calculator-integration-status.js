@@ -485,6 +485,13 @@ async function sendPayload(payload) {
           }.`,
       "ok"
     );
+
+    return {
+      ok: true,
+      status,
+      targetTaskId: result.taskId || null,
+      workspaceId: result.workspaceId || "main"
+    };
   } catch (error) {
     console.error(
       "Ошибка интеграции Team_poker → Team_calculator",
@@ -510,6 +517,13 @@ async function sendPayload(payload) {
       }. Повтор через 30 секунд.`,
       "error"
     );
+
+    return {
+      ok: false,
+      error: String(
+        error?.message || error
+      )
+    };
   } finally {
     if (inFlightKey === key) {
       inFlightKey = null;
@@ -795,5 +809,72 @@ async function start() {
     );
   }
 }
+
+window.TeamCalculatorIntegration = {
+  async syncPayload(payload) {
+    if (
+      !payload
+      || typeof payload !== "object"
+    ) {
+      return {
+        ok: false,
+        error:
+          "Некорректный payload Team_calculator."
+      };
+    }
+
+    const stored =
+      readStoredSync(payload);
+
+    if (
+      stored
+      && ["synced", "ignored_stale"]
+        .includes(stored.status)
+    ) {
+      return {
+        ok: true,
+        status: stored.status,
+        targetTaskId:
+          stored.targetTaskId || null,
+        workspaceId:
+          stored.workspaceId || "main",
+        reusedStoredResult: true
+      };
+    }
+
+    const result =
+      await sendPayload(payload);
+
+    if (result) {
+      return result;
+    }
+
+    const after =
+      readStoredSync(payload);
+
+    if (
+      after
+      && ["synced", "ignored_stale"]
+        .includes(after.status)
+    ) {
+      return {
+        ok: true,
+        status: after.status,
+        targetTaskId:
+          after.targetTaskId || null,
+        workspaceId:
+          after.workspaceId || "main",
+        reusedStoredResult: true
+      };
+    }
+
+    return {
+      ok: false,
+      error:
+        after?.error
+        || "Не удалось синхронизировать Team_calculator."
+    };
+  }
+};
 
 start();

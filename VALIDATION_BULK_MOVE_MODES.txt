@@ -1,0 +1,40 @@
+Team_poker bulk move validation
+==============================
+Base: status_refresh_and_filters
+
+app.js syntax: OK
+calculator-integration-status.js syntax: OK
+
+UI:
+- bulk move dialog: OK
+- multi-select: OK
+- select all: OK
+- target session: OK
+- reestimate / reuse estimate modes: OK
+
+Reestimate:
+- voting blocked: OK
+- history copied: OK
+- final estimate cleared: OK
+- previousEstimate retained: OK
+- reestimateRequired=true: OK
+
+Reuse:
+- current/previous estimate required: OK
+- finalEstimate reused: OK
+- estimatedRole reused: OK
+- estimateVersion reused: OK
+- status=estimated: OK
+- reestimateRequired=false: OK
+- reuse metadata/audit: OK
+
+Safety:
+- source delete only after verify: OK
+- incomplete target cleanup: OK
+- redirects/audit preserved: OK
+
+Team_calculator:
+- per-task transfer sync API: OK
+
+firestore.rules: unchanged
+metadata_connector: unchanged

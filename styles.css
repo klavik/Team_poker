@@ -286,6 +286,7 @@ textarea { min-height: 95px; resize: vertical; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 5px 4px;
   background: var(--surface);
   color: var(--muted);
@@ -293,6 +294,36 @@ textarea { min-height: 95px; resize: vertical; }
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.issue-list-group-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.issue-gitlab-status-filter {
+  width: auto;
+  max-width: 158px;
+  min-width: 0;
+  padding: 5px 28px 5px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  background-color: var(--surface);
+}
+
+.issue-filter-empty {
+  padding: 12px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .issue-list-group-count {
@@ -1293,5 +1324,134 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 
   .calculator-status-badges {
     justify-content: flex-start;
+  }
+}
+
+
+@media (max-width: 980px) {
+  .issue-list-group-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .issue-gitlab-status-filter {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+
+/* Массовый перенос задач */
+.bulk-move-mode-fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.bulk-move-mode-fieldset legend {
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bulk-move-mode-option {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.bulk-move-mode-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.bulk-move-mode-option input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.bulk-move-mode-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.bulk-move-mode-option small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.bulk-move-selection-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 8px;
+}
+
+.bulk-move-issue-list {
+  display: grid;
+  gap: 7px;
+  max-height: min(46vh, 440px);
+  overflow: auto;
+  padding: 2px 2px 8px;
+}
+
+.bulk-move-issue-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.bulk-move-issue-row:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.bulk-move-issue-row.disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.bulk-move-issue-row input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.bulk-move-issue-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.bulk-move-issue-body strong {
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.bulk-move-issue-body small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+@media (max-width: 620px) {
+  .bulk-move-selection-toolbar {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
