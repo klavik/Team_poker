@@ -1,0 +1,25 @@
+Team_poker status refresh + filters validation
+=============================================
+Base: Team_poker delivery_status_firestore_mirror
+
+Team_poker:
+- app.js syntax: OK
+- calculator-integration-status.js syntax: OK
+- refresh button creates Firestore request: OK
+- no GitLab API call from refresh button: OK
+- active GitLab-status filter: OK
+- estimated GitLab-status filter: OK
+- missing-status option: OK
+- bulk select respects active filter: OK
+- Firestore refresh rules: OK
+
+metadata_connector:
+- version 1.4.8
+- Python syntax: OK
+- refresh reads Team_calculator taskPool only: OK
+- refresh does not call fetch_issue/GitLab API: OK
+- current team/session targeting: OK
+- config.json unchanged: OK
+
+Worker: unchanged
+Team_calculator UI: unchanged

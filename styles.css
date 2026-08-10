@@ -1463,6 +1463,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 @media (max-width:760px){.bulk-voting-controls{align-items:stretch;flex-wrap:wrap}.bulk-task-actions{width:100%;margin-left:0;flex-wrap:wrap}}
 
 
+/* Application version */
 .app-version {
   display: inline-block;
   margin-left: 0.45rem;

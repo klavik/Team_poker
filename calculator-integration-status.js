@@ -17,10 +17,8 @@ import {
 const integrationConfig =
   window.TEAM_CALCULATOR_INTEGRATION || {};
 
-const POLL_INTERVAL_MS = 1200;
 const RETRY_DELAY_MS = 30000;
 let currentUser = null;
-let pollTimer = null;
 let statusRefreshTimer = null;
 let inFlightKey = null;
 let retryAfterByKey = new Map();
@@ -378,9 +376,9 @@ function renderCurrentState() {
 
   if (stored?.status === "error") {
     setStatus(
-      `Ошибка передачи в Team_calculator: ${
-        stored.error || "повторная попытка будет выполнена автоматически"
-      }.`,
+      `Последняя попытка передачи в Team_calculator завершилась ошибкой: ${
+        stored.error || "неизвестная ошибка"
+      }. Повторная передача произойдёт только после новой фиксации оценки.`,
       "error"
     );
     return;
@@ -388,8 +386,8 @@ function renderCurrentState() {
 
   setStatus(
     payload.reestimate?.required === true
-      ? "Задача готова к передаче в список «На переоценку»."
-      : "Оценка готова к автоматической передаче.",
+      ? "Задача отмечена для передачи в список «На переоценку». Передача выполняется при явной фиксации/переносе."
+      : "Оценка зафиксирована. Повторная передача выполняется только при новой фиксации оценки.",
     "warn"
   );
 }
@@ -707,20 +705,8 @@ function scheduleDeliveryStatusRefresh(delay = 250) {
   );
 }
 
-async function checkAndSync() {
+function refreshIntegrationUi() {
   renderCurrentState();
-
-  if (!currentUser || !configuredEndpoint()) {
-    return;
-  }
-
-  const payload = currentPayload();
-
-  if (!payload) {
-    return;
-  }
-
-  await sendPayload(payload);
 }
 
 async function waitForFirebaseApp() {
@@ -748,14 +734,14 @@ async function start() {
 
     onAuthStateChanged(auth, user => {
       currentUser = user || null;
-      checkAndSync();
+      refreshIntegrationUi();
       scheduleDeliveryStatusRefresh(100);
     });
 
     window.addEventListener(
       "hashchange",
       () => {
-        setTimeout(checkAndSync, 300);
+        setTimeout(refreshIntegrationUi, 300);
         scheduleDeliveryStatusRefresh(350);
       }
     );
@@ -768,27 +754,13 @@ async function start() {
       }
     );
 
-    const finalizeButton =
-      document.getElementById("finalizeBtn");
-
-    if (finalizeButton) {
-      finalizeButton.addEventListener(
-        "click",
-        () => setTimeout(checkAndSync, 1500)
-      );
-    }
-
-    pollTimer = window.setInterval(
-      checkAndSync,
-      POLL_INTERVAL_MS
-    );
+    // Передача оценки выполняется только явным вызовом
+    // TeamCalculatorIntegration.syncPayload() после фиксации
+    // или при специальном действии переноса.
 
     window.addEventListener(
       "beforeunload",
       () => {
-        if (pollTimer) {
-          clearInterval(pollTimer);
-        }
         if (statusRefreshTimer) {
           clearTimeout(statusRefreshTimer);
         }
@@ -797,7 +769,7 @@ async function start() {
       { once: true }
     );
 
-    checkAndSync();
+    refreshIntegrationUi();
     syncDeliveryStatuses({ force: true });
   } catch (error) {
     console.error(error);
