@@ -17,11 +17,9 @@ import {
 const integrationConfig =
   window.TEAM_CALCULATOR_INTEGRATION || {};
 
-const RETRY_DELAY_MS = 30000;
 let currentUser = null;
 let statusRefreshTimer = null;
 let inFlightKey = null;
-let retryAfterByKey = new Map();
 
 let deliveryStatusDb = null;
 let deliveryStatusUnsubscribe = null;
@@ -414,12 +412,6 @@ async function sendPayload(payload) {
     return;
   }
 
-  const retryAfter = retryAfterByKey.get(key) || 0;
-
-  if (Date.now() < retryAfter) {
-    return;
-  }
-
   inFlightKey = key;
   setStatus(
     payload.reestimate?.required === true
@@ -450,26 +442,44 @@ async function sendPayload(payload) {
       body: JSON.stringify(requestPayload)
     });
 
-    const result = await response
-      .json()
-      .catch(() => ({}));
+    /*
+      /sync возвращает HTTP 200 только после успешной обработки.
+      На нестабильном соединении тело успешного ответа иногда
+      оказывается недоступно браузеру, хотя сам status=200 уже
+      получен. Поэтому успешность определяем по HTTP status, а JSON
+      используем только как дополнительную информацию.
 
-    if (!response.ok || result.ok !== true) {
+      Для 4xx/5xx по-прежнему пытаемся извлечь текст ошибки из JSON.
+    */
+    let result = {};
+
+    try {
+      result = await response.json();
+    } catch (bodyError) {
+      if (!response.ok) {
+        console.warn(
+          "Не удалось прочитать тело ошибочного ответа Team_calculator",
+          bodyError
+        );
+      }
+    }
+
+    if (!response.ok) {
       throw new Error(
-        result.error || `HTTP ${response.status}`
+        result?.error || `HTTP ${response.status}`
       );
     }
 
-    const status = result.status || "synced";
+    const status =
+      String(result?.status || "synced").trim()
+      || "synced";
 
     writeStoredSync(payload, {
       status,
-      targetTaskId: result.taskId || null,
-      workspaceId: result.workspaceId || "main",
+      targetTaskId: result?.taskId || null,
+      workspaceId: result?.workspaceId || "main",
       syncedAt: new Date().toISOString()
     });
-
-    retryAfterByKey.delete(key);
 
     setStatus(
       payload.reestimate?.required === true
@@ -487,18 +497,13 @@ async function sendPayload(payload) {
     return {
       ok: true,
       status,
-      targetTaskId: result.taskId || null,
-      workspaceId: result.workspaceId || "main"
+      targetTaskId: result?.taskId || null,
+      workspaceId: result?.workspaceId || "main"
     };
   } catch (error) {
     console.error(
       "Ошибка интеграции Team_poker → Team_calculator",
       error
-    );
-
-    retryAfterByKey.set(
-      key,
-      Date.now() + RETRY_DELAY_MS
     );
 
     writeStoredSync(payload, {
@@ -512,7 +517,7 @@ async function sendPayload(payload) {
     setStatus(
       `Ошибка передачи в Team_calculator: ${
         error?.message || error
-      }. Повтор через 30 секунд.`,
+      }. Повторная передача произойдёт только после новой фиксации оценки.`,
       "error"
     );
 
