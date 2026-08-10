@@ -548,11 +548,22 @@ async function init() {
     с настройками по умолчанию, после чего initializeFirestore()
     с persistent cache завершается ошибкой different options.
   */
-  const cache = runtimeConfig.enablePersistentCache === false
-    ? memoryLocalCache()
-    : persistentLocalCache({
+  /*
+    По умолчанию используем memory cache.
+
+    Persistent multi-tab cache ранее мог переполнить browser storage
+    (`QuotaExceededError` в WebStorageSharedClientState) и после этого
+    приводил Firestore к INTERNAL ASSERTION FAILED, из-за чего переставали
+    загружаться команды/сессии/задачи.
+
+    Persistent cache теперь включается только явно:
+      enablePersistentCache: true
+  */
+  const cache = runtimeConfig.enablePersistentCache === true
+    ? persistentLocalCache({
         tabManager: persistentMultipleTabManager()
-      });
+      })
+    : memoryLocalCache();
 
   db = initializeFirestore(
     firebaseApp,
