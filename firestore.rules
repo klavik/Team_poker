@@ -199,6 +199,75 @@ service cloud.firestore {
         allow create, update, delete: if false;
       }
 
+      match /team_calculator_sync/{jobId} {
+        allow read: if isTeamMember(teamId);
+
+        /*
+          Team_poker создаёт только immutable pending job.
+          Обрабатывает и обновляет его metadata_connector
+          серверными IAM-правами.
+        */
+        allow create: if canManageEstimation(teamId)
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.type
+            == 'sync_team_calculator_estimate'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.idempotencyKey == jobId
+          && request.resource.data.teamId == teamId
+          && request.resource.data.sessionId is string
+          && request.resource.data.sessionId.size() > 0
+          && request.resource.data.issueId is string
+          && request.resource.data.issueId.size() > 0
+          && request.resource.data.estimatedRole
+            in ['backend', 'frontend']
+          && request.resource.data.eventType
+            in ['estimate_finalized', 'reestimate_required']
+          && request.resource.data.estimateVersion is number
+          && request.resource.data.estimateVersion >= 0
+          && request.resource.data.payload is map
+          && request.resource.data.payload.taskId
+            == request.resource.data.issueId
+          && request.resource.data.payload.estimatedRole
+            == request.resource.data.estimatedRole
+          && request.resource.data.payload.eventType
+            == request.resource.data.eventType
+          && request.resource.data.payload.team is map
+          && request.resource.data.payload.team.id == teamId
+          && request.resource.data.payload.session is map
+          && request.resource.data.payload.session.id
+            == request.resource.data.sessionId
+          && request.resource.data.payload.integrationSchemaVersion
+            is number
+          && request.resource.data.payload.integrationSchemaVersion
+            >= 1
+          && (
+            (
+              request.resource.data.eventType
+                == 'estimate_finalized'
+              && request.resource.data.finalEstimate is number
+              && request.resource.data.finalEstimate > 0
+              && request.resource.data.payload.finalEstimate
+                == request.resource.data.finalEstimate
+            )
+            || (
+              request.resource.data.eventType
+                == 'reestimate_required'
+              && request.resource.data.payload.reestimate is map
+              && request.resource.data.payload.reestimate.required
+                == true
+            )
+          )
+          && request.resource.data.requestedByUid
+            == request.auth.uid
+          && request.resource.data.requestedByEmail is string
+          && request.resource.data.requestedByEmail.size() > 0
+          && request.resource.data.requestedByEmail.size() <= 254
+          && request.resource.data.requestedAt is string
+          && request.resource.data.updatedAt is string;
+
+        allow update, delete: if false;
+      }
+
       match /delivery_status_refresh/{requestId} {
         allow read: if isTeamMember(teamId);
 

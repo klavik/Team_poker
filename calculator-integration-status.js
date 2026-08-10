@@ -11,6 +11,9 @@ import {
 import {
   getFirestore,
   collection,
+  doc,
+  getDoc,
+  setDoc,
   onSnapshot
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
@@ -25,6 +28,9 @@ let deliveryStatusDb = null;
 let deliveryStatusUnsubscribe = null;
 let deliveryStatusTeamId = null;
 const deliveryStatusSnapshotByIssueId = new Map();
+
+let calculatorSyncDb = null;
+const calculatorSyncJobUnsubscribers = new Map();
 
 function integrationStyle() {
   if (document.getElementById("teamCalculatorIntegrationStyle")) {
@@ -113,16 +119,13 @@ function setStatus(text, type = "") {
     + (type ? ` ${type}` : "");
 }
 
-function configuredEndpoint() {
-  const endpoint = String(
-    integrationConfig.endpoint || ""
+function configuredSyncCollection() {
+  const value = String(
+    integrationConfig.syncCollection
+    || "team_calculator_sync"
   ).trim();
 
-  if (!endpoint || endpoint.includes("REPLACE_")) {
-    return null;
-  }
-
-  return endpoint;
+  return value || "team_calculator_sync";
 }
 
 function configuredStatusCollection() {
@@ -312,17 +315,264 @@ function writeStoredSync(payload, value) {
   }
 }
 
-function renderCurrentState() {
-  const endpoint = configuredEndpoint();
+function safeJobPart(value, maxLength = 40) {
+  return String(value || "")
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .slice(0, maxLength);
+}
 
-  if (!endpoint) {
-    setStatus(
-      "Интеграция не настроена: укажите URL Cloudflare Worker.",
-      "error"
-    );
+function hashString(value) {
+  let hash = 2166136261;
+
+  for (
+    let index = 0;
+    index < String(value || "").length;
+    index += 1
+  ) {
+    hash ^= String(value || "").charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(36);
+}
+
+function calculatorSyncJobId(payload) {
+  return [
+    "tc",
+    safeJobPart(payload.taskId, 36),
+    safeJobPart(payload.estimatedRole, 12),
+    `v${Number(payload.estimateVersion || 0)}`,
+    hashString(payloadKey(payload))
+  ].join("__");
+}
+
+function calculatorSyncTeamId(payload) {
+  return String(
+    payload?.team?.id || ""
+  ).trim();
+}
+
+function calculatorSyncSessionId(payload) {
+  return String(
+    payload?.session?.id || ""
+  ).trim();
+}
+
+function calculatorSyncDatabase() {
+  if (calculatorSyncDb) {
+    return calculatorSyncDb;
+  }
+
+  const app = getApp();
+  calculatorSyncDb = getFirestore(app);
+  return calculatorSyncDb;
+}
+
+function currentPayloadKey() {
+  const payload = currentPayload();
+
+  return payload
+    ? payloadKey(payload)
+    : null;
+}
+
+function terminalSyncJobStatus(data) {
+  const status = String(
+    data?.status || ""
+  ).trim();
+
+  return ["succeeded", "failed"].includes(status);
+}
+
+function syncResultStatus(data) {
+  return String(
+    data?.resultStatus || data?.status || "synced"
+  ).trim() || "synced";
+}
+
+function stopCalculatorSyncJobWatch(key) {
+  const unsubscribe =
+    calculatorSyncJobUnsubscribers.get(key);
+
+  if (unsubscribe) {
+    try {
+      unsubscribe();
+    } catch {
+      // Best effort.
+    }
+  }
+
+  calculatorSyncJobUnsubscribers.delete(key);
+}
+
+function watchCalculatorSyncJob(
+  jobRef,
+  payload,
+  key
+) {
+  if (
+    !jobRef
+    || !payload
+    || calculatorSyncJobUnsubscribers.has(key)
+  ) {
     return;
   }
 
+  const unsubscribe = onSnapshot(
+    jobRef,
+    snapshot => {
+      if (!snapshot.exists()) {
+        return;
+      }
+
+      const data = snapshot.data() || {};
+      const status = String(
+        data.status || ""
+      ).trim();
+
+      const isCurrent =
+        currentPayloadKey() === key;
+
+      if (
+        status === "pending"
+        || status === "processing"
+      ) {
+        writeStoredSync(payload, {
+          status,
+          jobId: jobRef.id,
+          queuedAt:
+            data.requestedAt
+            || new Date().toISOString()
+        });
+
+        if (isCurrent) {
+          setStatus(
+            status === "processing"
+              ? "Оценка обрабатывается connector и передаётся в Team_calculator…"
+              : "Оценка поставлена в очередь Team_calculator. Ожидается connector…",
+            "warn"
+          );
+        }
+
+        return;
+      }
+
+      if (status === "succeeded") {
+        const resultStatus =
+          syncResultStatus(data);
+
+        writeStoredSync(payload, {
+          status: resultStatus,
+          jobId: jobRef.id,
+          targetTaskId:
+            data.targetTaskId || null,
+          workspaceId:
+            data.workspaceId || "main",
+          syncedAt:
+            data.completedAt
+            || new Date().toISOString()
+        });
+
+        if (isCurrent) {
+          setStatus(
+            payload.reestimate?.required === true
+              ? "Задача передана в список Team_calculator «На переоценку»."
+              : `Передано в общий пул Team_calculator · версия ${
+                  payload.estimateVersion
+                }${
+                  payload.transfer?.isTransferred
+                    ? " · перенос отмечен"
+                    : ""
+                }.`,
+            "ok"
+          );
+
+          scheduleDeliveryStatusRefresh(500);
+        }
+
+        stopCalculatorSyncJobWatch(key);
+        return;
+      }
+
+      if (status === "failed") {
+        const error = String(
+          data.error
+          || "Неизвестная ошибка connector"
+        );
+
+        writeStoredSync(payload, {
+          status: "error",
+          jobId: jobRef.id,
+          error,
+          failedAt:
+            data.completedAt
+            || new Date().toISOString()
+        });
+
+        if (isCurrent) {
+          setStatus(
+            `Ошибка передачи в Team_calculator: ${error}.`,
+            "error"
+          );
+        }
+
+        stopCalculatorSyncJobWatch(key);
+      }
+    },
+    error => {
+      /*
+        Ошибка realtime-listener не означает ошибку самой передачи.
+        Firestore автоматически переподключится.
+      */
+      console.error(
+        "Ошибка наблюдения за очередью Team_calculator",
+        error
+      );
+    }
+  );
+
+  calculatorSyncJobUnsubscribers.set(
+    key,
+    unsubscribe
+  );
+}
+
+async function ensureCurrentSyncJobWatch(
+  payload,
+  stored
+) {
+  if (
+    !payload
+    || !stored?.jobId
+    || !currentUser
+  ) {
+    return;
+  }
+
+  const teamId =
+    calculatorSyncTeamId(payload);
+
+  if (!teamId) {
+    return;
+  }
+
+  const key = payloadKey(payload);
+  const jobRef = doc(
+    calculatorSyncDatabase(),
+    "teams",
+    teamId,
+    configuredSyncCollection(),
+    stored.jobId
+  );
+
+  watchCalculatorSyncJob(
+    jobRef,
+    payload,
+    key
+  );
+}
+
+function renderCurrentState() {
   if (!currentUser) {
     setStatus(
       "Войдите, чтобы передавать оценки в Team_calculator."
@@ -334,7 +584,7 @@ function renderCurrentState() {
 
   if (!payload) {
     setStatus(
-      "После фиксации оценка будет автоматически передана в Team_calculator."
+      "После фиксации оценка будет автоматически поставлена в очередь Team_calculator."
     );
     return;
   }
@@ -343,7 +593,7 @@ function renderCurrentState() {
 
   if (inFlightKey === key) {
     setStatus(
-      "Оценка передаётся в общий пул Team_calculator…",
+      "Оценка ставится в очередь Team_calculator…",
       "warn"
     );
     return;
@@ -353,7 +603,8 @@ function renderCurrentState() {
 
   if (
     stored
-    && ["synced", "ignored_stale"].includes(stored.status)
+    && ["synced", "ignored_stale", "reestimate_required"]
+      .includes(stored.status)
   ) {
     setStatus(
       payload.reestimate?.required === true
@@ -368,15 +619,40 @@ function renderCurrentState() {
       "ok"
     );
 
-    scheduleDeliveryStatusRefresh(700);
+    scheduleDeliveryStatusRefresh(500);
+    return;
+  }
+
+  if (
+    stored
+    && ["pending", "processing", "queued"]
+      .includes(stored.status)
+  ) {
+    setStatus(
+      stored.status === "processing"
+        ? "Оценка обрабатывается connector и передаётся в Team_calculator…"
+        : "Оценка находится в очереди Team_calculator. Ожидается connector…",
+      "warn"
+    );
+
+    ensureCurrentSyncJobWatch(
+      payload,
+      stored
+    ).catch(error => {
+      console.error(
+        "Не удалось восстановить наблюдение за очередью Team_calculator",
+        error
+      );
+    });
+
     return;
   }
 
   if (stored?.status === "error") {
     setStatus(
-      `Последняя попытка передачи в Team_calculator завершилась ошибкой: ${
+      `Последняя передача в Team_calculator завершилась ошибкой: ${
         stored.error || "неизвестная ошибка"
-      }. Повторная передача произойдёт только после новой фиксации оценки.`,
+      }.`,
       "error"
     );
     return;
@@ -384,125 +660,176 @@ function renderCurrentState() {
 
   setStatus(
     payload.reestimate?.required === true
-      ? "Задача отмечена для передачи в список «На переоценку». Передача выполняется при явной фиксации/переносе."
-      : "Оценка зафиксирована. Повторная передача выполняется только при новой фиксации оценки.",
+      ? "Задача отмечена для передачи в список «На переоценку». Передача выполняется при явном переносе."
+      : "Оценка зафиксирована. Передача выполняется только при явной фиксации оценки.",
     "warn"
   );
 }
 
-async function sendPayload(payload) {
-  const endpoint = configuredEndpoint();
 
-  if (!endpoint || !currentUser) {
-    return;
+async function sendPayload(payload) {
+  if (!currentUser) {
+    return {
+      ok: false,
+      error: "Пользователь не авторизован."
+    };
+  }
+
+  const teamId =
+    calculatorSyncTeamId(payload);
+
+  const sessionId =
+    calculatorSyncSessionId(payload);
+
+  if (!teamId || !sessionId) {
+    return {
+      ok: false,
+      error:
+        "В payload отсутствует команда или сессия Team_poker."
+    };
   }
 
   const key = payloadKey(payload);
 
   if (inFlightKey === key) {
-    return;
+    return {
+      ok: true,
+      status: "pending"
+    };
   }
 
   const stored = readStoredSync(payload);
 
   if (
     stored
-    && ["synced", "ignored_stale"].includes(stored.status)
+    && ["synced", "ignored_stale", "reestimate_required"]
+      .includes(stored.status)
   ) {
-    return;
+    return {
+      ok: true,
+      status: stored.status,
+      targetTaskId:
+        stored.targetTaskId || null,
+      workspaceId:
+        stored.workspaceId || "main",
+      reusedStoredResult: true
+    };
   }
 
   inFlightKey = key;
+
   setStatus(
-    payload.reestimate?.required === true
-      ? "Задача передаётся в список Team_calculator «На переоценку»…"
-      : "Оценка передаётся в общий пул Team_calculator…",
+    "Оценка ставится в очередь Team_calculator…",
     "warn"
   );
 
   try {
-    const token = await currentUser.getIdToken();
-
     const requestPayload = {
       ...payload,
       finalizedBy: payload.finalizedBy || {
         uid: currentUser.uid,
         email: currentUser.email || null,
-        displayName: currentUser.displayName || null
+        displayName:
+          currentUser.displayName || null
       },
       source: "team_poker"
     };
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      },
-      body: JSON.stringify(requestPayload)
-    });
+    const jobId =
+      calculatorSyncJobId(requestPayload);
 
-    /*
-      /sync возвращает HTTP 200 только после успешной обработки.
-      На нестабильном соединении тело успешного ответа иногда
-      оказывается недоступно браузеру, хотя сам status=200 уже
-      получен. Поэтому успешность определяем по HTTP status, а JSON
-      используем только как дополнительную информацию.
+    const jobRef = doc(
+      calculatorSyncDatabase(),
+      "teams",
+      teamId,
+      configuredSyncCollection(),
+      jobId
+    );
 
-      Для 4xx/5xx по-прежнему пытаемся извлечь текст ошибки из JSON.
-    */
-    let result = {};
+    const existing =
+      await getDoc(jobRef);
 
-    try {
-      result = await response.json();
-    } catch (bodyError) {
-      if (!response.ok) {
-        console.warn(
-          "Не удалось прочитать тело ошибочного ответа Team_calculator",
-          bodyError
-        );
+    if (!existing.exists()) {
+      const now =
+        new Date().toISOString();
+
+      const job = {
+        schemaVersion: 1,
+        type:
+          "sync_team_calculator_estimate",
+        status: "pending",
+        idempotencyKey: jobId,
+
+        teamId,
+        sessionId,
+        issueId: requestPayload.taskId,
+        estimatedRole:
+          requestPayload.estimatedRole,
+        eventType:
+          requestPayload.eventType,
+        finalEstimate:
+          requestPayload.finalEstimate,
+        estimateVersion:
+          requestPayload.estimateVersion,
+
+        payload: requestPayload,
+
+        requestedByUid:
+          currentUser.uid,
+        requestedByEmail:
+          currentUser.email || "",
+        requestedByDisplayName:
+          currentUser.displayName
+          || currentUser.email
+          || "",
+        requestedAt: now,
+        updatedAt: now,
+        attempts: 0
+      };
+
+      try {
+        await setDoc(jobRef, job);
+      } catch (createError) {
+        /*
+          Если другая вкладка успела создать тот же детерминированный
+          job между getDoc() и setDoc(), просто используем существующий.
+        */
+        const replay =
+          await getDoc(jobRef);
+
+        if (!replay.exists()) {
+          throw createError;
+        }
       }
     }
 
-    if (!response.ok) {
-      throw new Error(
-        result?.error || `HTTP ${response.status}`
-      );
-    }
-
-    const status =
-      String(result?.status || "synced").trim()
-      || "synced";
-
     writeStoredSync(payload, {
-      status,
-      targetTaskId: result?.taskId || null,
-      workspaceId: result?.workspaceId || "main",
-      syncedAt: new Date().toISOString()
+      status: "pending",
+      jobId,
+      queuedAt:
+        new Date().toISOString()
     });
 
+    watchCalculatorSyncJob(
+      jobRef,
+      payload,
+      key
+    );
+
     setStatus(
-      payload.reestimate?.required === true
-        ? "Задача передана в список Team_calculator «На переоценку»."
-        : `Передано в общий пул Team_calculator · версия ${
-            payload.estimateVersion
-          }${
-            payload.transfer?.isTransferred
-              ? " · перенос отмечен"
-              : ""
-          }.`,
-      "ok"
+      "Оценка поставлена в очередь Team_calculator. Ожидается connector…",
+      "warn"
     );
 
     return {
       ok: true,
-      status,
-      targetTaskId: result?.taskId || null,
-      workspaceId: result?.workspaceId || "main"
+      status: "queued",
+      jobId,
+      workspaceId: "main"
     };
   } catch (error) {
     console.error(
-      "Ошибка интеграции Team_poker → Team_calculator",
+      "Ошибка постановки оценки в очередь Team_calculator",
       error
     );
 
@@ -511,13 +838,14 @@ async function sendPayload(payload) {
       error: String(
         error?.message || error
       ).slice(0, 1000),
-      failedAt: new Date().toISOString()
+      failedAt:
+        new Date().toISOString()
     });
 
     setStatus(
-      `Ошибка передачи в Team_calculator: ${
+      `Ошибка постановки в очередь Team_calculator: ${
         error?.message || error
-      }. Повторная передача произойдёт только после новой фиксации оценки.`,
+      }.`,
       "error"
     );
 
@@ -533,6 +861,7 @@ async function sendPayload(payload) {
     }
   }
 }
+
 
 function renderDeliveryStatusSnapshot() {
   const descriptors = deliveryStatusDescriptors();
@@ -770,6 +1099,13 @@ async function start() {
           clearTimeout(statusRefreshTimer);
         }
         stopDeliveryStatusSubscription();
+
+        for (
+          const key
+          of [...calculatorSyncJobUnsubscribers.keys()]
+        ) {
+          stopCalculatorSyncJobWatch(key);
+        }
       },
       { once: true }
     );
