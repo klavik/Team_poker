@@ -1,7 +1,7 @@
 window.GITLAB_CONNECTOR_INTEGRATION = {
   // URL корпоративного GitLab без /api/v4.
   // Пример: "https://gitlab.company.local"
-  gitlabBaseUrl: "https://git.mars.corp.dev.vtb",
+  gitlabBaseUrl: "REPLACE_WITH_CORPORATE_GITLAB_URL",
 
   // Метка, добавляемая после успешной установки оценки.
   label: "estimate::done",

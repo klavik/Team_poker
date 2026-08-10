@@ -1,0 +1,26 @@
+Team_poker task list render fix v2
+==================================
+Base: task_list_render_hotfix
+
+Root cause:
+- issueTransferInfo() missing
+- issueTransferTooltip() missing
+- renderIssues() referenced both
+- fallback was therefore always activated
+
+Validation:
+- issueTransferInfo restored exactly once: OK
+- issueTransferTooltip restored exactly once: OK
+- app.js syntax: OK
+- emergency fallback retained: OK
+
+Changed:
+- app.js
+
+Unchanged:
+- index.html
+- styles.css
+- firestore.rules
+- calculator-integration-status.js
+- metadata_connector
+- Team_calculator

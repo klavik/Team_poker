@@ -1,6 +1,3 @@
-const APP_VERSION = "1.0.0";
-console.info(`[Planning Poker] v${APP_VERSION}`);
-
 import {
   initializeApp
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
