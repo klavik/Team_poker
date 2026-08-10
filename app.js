@@ -1,3 +1,6 @@
+const APP_VERSION = "1.0.0";
+console.info(`[Planning Poker] v${APP_VERSION}`);
+
 import {
   initializeApp
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
@@ -6481,6 +6484,47 @@ async function finalizeEstimate() {
     }
 
     await batch.commit();
+
+    // Явно передаём только что зафиксированную оценку в Team_calculator.
+    // Важно: интеграция больше не должна отправлять оценку сама по себе
+    // при открытии карточки или по таймеру.
+    try {
+      const integration =
+        window.TeamCalculatorIntegration;
+
+      if (
+        integration
+        && typeof integration.syncPayload === "function"
+      ) {
+        const committedSnapshot =
+          await getDoc(currentIssueRef());
+
+        if (committedSnapshot.exists()) {
+          const committedIssue = {
+            id: committedSnapshot.id,
+            ...committedSnapshot.data()
+          };
+
+          const payload =
+            buildTeamCalendarEstimatePayload(
+              committedIssue,
+              {
+                sessionId: state.sessionId,
+                sessionName: currentSession()?.name || ""
+              }
+            );
+
+          if (payload) {
+            await integration.syncPayload(payload);
+          }
+        }
+      }
+    } catch (integrationError) {
+      console.error(
+        "Ошибка передачи зафиксированной оценки в Team_calculator",
+        integrationError
+      );
+    }
 
     toast(
       gitlabJob
