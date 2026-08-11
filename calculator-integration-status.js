@@ -14,6 +14,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
   onSnapshot
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
@@ -63,6 +64,20 @@ function integrationStyle() {
       border-color:#f5b7b1;
       background:#fff3f2;
     }
+    .team-calculator-sync-box .team-calculator-retry{
+      margin-top:8px;
+      border:0;
+      border-radius:8px;
+      padding:7px 10px;
+      background:#edf1f7;
+      color:#172033;
+      font-weight:700;
+      cursor:pointer;
+    }
+    .team-calculator-sync-box .team-calculator-retry:disabled{
+      cursor:default;
+      opacity:.55;
+    }
   `;
 
   document.head.appendChild(style);
@@ -106,7 +121,12 @@ function ensureStatusBox() {
   return box;
 }
 
-function setStatus(text, type = "") {
+function setStatus(
+  text,
+  type = "",
+  retryHandler = null,
+  retryDisabled = false
+) {
   const box = ensureStatusBox();
 
   if (!box) {
@@ -117,6 +137,21 @@ function setStatus(text, type = "") {
   box.className =
     "team-calculator-sync-box"
     + (type ? ` ${type}` : "");
+
+  if (retryHandler || retryDisabled) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "team-calculator-retry";
+    button.textContent = "Передать повторно";
+    button.disabled = retryDisabled;
+
+    if (retryHandler && !retryDisabled) {
+      button.addEventListener("click", retryHandler);
+    }
+
+    box.appendChild(document.createElement("br"));
+    box.appendChild(button);
+  }
 }
 
 function configuredSyncCollection() {
@@ -178,6 +213,16 @@ function applyDeliveryStatuses(items, meta = {}) {
   ) {
     api.setDeliveryStatuses(items, meta);
   }
+}
+
+function canManualRetry() {
+  const api = window.TeamPokerIntegration;
+
+  return Boolean(
+    api
+    && typeof api.canManageCurrentEstimation === "function"
+    && api.canManageCurrentEstimation()
+  );
 }
 
 function currentPayload() {
@@ -358,6 +403,22 @@ function calculatorSyncSessionId(payload) {
   ).trim();
 }
 
+function calculatorSyncJobReference(payload) {
+  const teamId = calculatorSyncTeamId(payload);
+
+  if (!teamId) {
+    return null;
+  }
+
+  return doc(
+    calculatorSyncDatabase(),
+    "teams",
+    teamId,
+    configuredSyncCollection(),
+    calculatorSyncJobId(payload)
+  );
+}
+
 function calculatorSyncDatabase() {
   if (calculatorSyncDb) {
     return calculatorSyncDb;
@@ -450,7 +511,9 @@ function watchCalculatorSyncJob(
             status === "processing"
               ? "Оценка обрабатывается connector и передаётся в Team_calculator…"
               : "Оценка поставлена в очередь Team_calculator. Ожидается connector…",
-            "warn"
+            "warn",
+            null,
+            canManualRetry()
           );
         }
 
@@ -484,7 +547,10 @@ function watchCalculatorSyncJob(
                     ? " · перенос отмечен"
                     : ""
                 }.`,
-            "ok"
+            "ok",
+            canManualRetry()
+              ? retryCurrentPayload
+              : null
           );
 
           scheduleDeliveryStatusRefresh(500);
@@ -512,7 +578,10 @@ function watchCalculatorSyncJob(
         if (isCurrent) {
           setStatus(
             `Ошибка передачи в Team_calculator: ${error}.`,
-            "error"
+            "error",
+            canManualRetry()
+              ? retryCurrentPayload
+              : null
           );
         }
 
@@ -594,7 +663,9 @@ function renderCurrentState() {
   if (inFlightKey === key) {
     setStatus(
       "Оценка ставится в очередь Team_calculator…",
-      "warn"
+      "warn",
+      null,
+      canManualRetry()
     );
     return;
   }
@@ -616,7 +687,10 @@ function renderCurrentState() {
               ? " · перенос отмечен"
               : ""
           }.`,
-      "ok"
+      "ok",
+      canManualRetry()
+        ? retryCurrentPayload
+        : null
     );
 
     scheduleDeliveryStatusRefresh(500);
@@ -632,7 +706,9 @@ function renderCurrentState() {
       stored.status === "processing"
         ? "Оценка обрабатывается connector и передаётся в Team_calculator…"
         : "Оценка находится в очереди Team_calculator. Ожидается connector…",
-      "warn"
+      "warn",
+      null,
+      canManualRetry()
     );
 
     ensureCurrentSyncJobWatch(
@@ -653,19 +729,215 @@ function renderCurrentState() {
       `Последняя передача в Team_calculator завершилась ошибкой: ${
         stored.error || "неизвестная ошибка"
       }.`,
-      "error"
+      "error",
+      canManualRetry()
+        ? retryCurrentPayload
+        : null
     );
     return;
   }
 
   setStatus(
     payload.reestimate?.required === true
-      ? "Задача отмечена для передачи в список «На переоценку». Передача выполняется при явном переносе."
-      : "Оценка зафиксирована. Передача выполняется только при явной фиксации оценки.",
-    "warn"
+      ? "Задача отмечена для передачи в список «На переоценку»."
+      : "Оценка зафиксирована. Можно повторно передать текущую версию без создания новой оценки.",
+    "warn",
+    canManualRetry()
+      ? retryCurrentPayload
+      : null
   );
 }
 
+
+async function retryCurrentPayload() {
+  if (!currentUser) {
+    setStatus(
+      "Войдите, чтобы повторно передать оценку в Team_calculator.",
+      "error"
+    );
+    return;
+  }
+
+  if (!canManualRetry()) {
+    setStatus(
+      "Повторная передача доступна Администратору и Тимлиду.",
+      "error"
+    );
+    return;
+  }
+
+  const payload = currentPayload();
+
+  if (!payload) {
+    setStatus(
+      "Нет зафиксированной оценки для повторной передачи в Team_calculator.",
+      "error"
+    );
+    return;
+  }
+
+  const teamId = calculatorSyncTeamId(payload);
+  const sessionId = calculatorSyncSessionId(payload);
+
+  if (!teamId || !sessionId) {
+    setStatus(
+      "В текущей оценке отсутствует команда или сессия Team_poker.",
+      "error"
+    );
+    return;
+  }
+
+  const key = payloadKey(payload);
+
+  if (inFlightKey === key) {
+    setStatus(
+      "Операция Team_calculator уже выполняется…",
+      "warn",
+      null,
+      true
+    );
+    return;
+  }
+
+  inFlightKey = key;
+
+  try {
+    const requestPayload = {
+      ...payload,
+      finalizedBy: payload.finalizedBy || {
+        uid: currentUser.uid,
+        email: currentUser.email || null,
+        displayName:
+          currentUser.displayName || null
+      },
+      source: "team_poker"
+    };
+
+    const jobId = calculatorSyncJobId(requestPayload);
+    const jobRef = calculatorSyncJobReference(requestPayload);
+
+    if (!jobRef) {
+      throw new Error(
+        "Не удалось определить Firestore job Team_calculator."
+      );
+    }
+
+    const snapshot = await getDoc(jobRef);
+    const now = new Date().toISOString();
+
+    if (!snapshot.exists()) {
+      await setDoc(jobRef, {
+        schemaVersion: 1,
+        type: "sync_team_calculator_estimate",
+        status: "pending",
+        idempotencyKey: jobId,
+
+        teamId,
+        sessionId,
+        issueId: requestPayload.taskId,
+        estimatedRole: requestPayload.estimatedRole,
+        eventType: requestPayload.eventType,
+        finalEstimate: requestPayload.finalEstimate,
+        estimateVersion: requestPayload.estimateVersion,
+
+        payload: requestPayload,
+
+        requestedByUid: currentUser.uid,
+        requestedByEmail: currentUser.email || "",
+        requestedByDisplayName:
+          currentUser.displayName
+          || currentUser.email
+          || "",
+        requestedAt: now,
+        updatedAt: now,
+        attempts: 0
+      });
+    } else {
+      const data = snapshot.data() || {};
+      const status = String(data.status || "").trim();
+
+      if (["pending", "processing"].includes(status)) {
+        writeStoredSync(payload, {
+          status,
+          jobId,
+          queuedAt: data.requestedAt || now
+        });
+
+        watchCalculatorSyncJob(jobRef, payload, key);
+
+        setStatus(
+          status === "processing"
+            ? "Оценка уже обрабатывается connector и передаётся в Team_calculator…"
+            : "Оценка уже находится в очереди Team_calculator.",
+          "warn",
+          null,
+          true
+        );
+        return;
+      }
+
+      if (!["failed", "succeeded"].includes(status)) {
+        throw new Error(
+          `Нельзя повторить job Team_calculator со статусом ${status || "—"}`
+        );
+      }
+
+      await updateDoc(jobRef, {
+        status: "pending",
+        error: null,
+        retryRequestedByUid: currentUser.uid,
+        retryRequestedByEmail: currentUser.email || "",
+        retryRequestedByDisplayName:
+          currentUser.displayName
+          || currentUser.email
+          || "",
+        retryRequestedAt: now,
+        requestedAt: now,
+        updatedAt: now
+      });
+    }
+
+    writeStoredSync(payload, {
+      status: "pending",
+      jobId,
+      queuedAt: now
+    });
+
+    watchCalculatorSyncJob(jobRef, payload, key);
+
+    setStatus(
+      `Повторная передача версии ${payload.estimateVersion} в Team_calculator поставлена в очередь.`,
+      "warn",
+      null,
+      true
+    );
+  } catch (error) {
+    console.error(
+      "Ошибка повторной постановки оценки в очередь Team_calculator",
+      error
+    );
+
+    writeStoredSync(payload, {
+      status: "error",
+      error: String(
+        error?.message || error
+      ).slice(0, 1000),
+      failedAt: new Date().toISOString()
+    });
+
+    setStatus(
+      `Ошибка повторной передачи в Team_calculator: ${
+        error?.message || error
+      }.`,
+      "error",
+      retryCurrentPayload
+    );
+  } finally {
+    if (inFlightKey === key) {
+      inFlightKey = null;
+    }
+  }
+}
 
 async function sendPayload(payload) {
   if (!currentUser) {
@@ -720,7 +992,9 @@ async function sendPayload(payload) {
 
   setStatus(
     "Оценка ставится в очередь Team_calculator…",
-    "warn"
+    "warn",
+    null,
+    canManualRetry()
   );
 
   try {
@@ -818,7 +1092,9 @@ async function sendPayload(payload) {
 
     setStatus(
       "Оценка поставлена в очередь Team_calculator. Ожидается connector…",
-      "warn"
+      "warn",
+      null,
+      canManualRetry()
     );
 
     return {
@@ -846,7 +1122,10 @@ async function sendPayload(payload) {
       `Ошибка постановки в очередь Team_calculator: ${
         error?.message || error
       }.`,
-      "error"
+      "error",
+      canManualRetry()
+        ? retryCurrentPayload
+        : null
     );
 
     return {

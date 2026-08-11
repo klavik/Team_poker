@@ -203,11 +203,15 @@ service cloud.firestore {
         allow read: if isTeamMember(teamId);
 
         /*
-          Team_poker создаёт только immutable pending job.
-          Обрабатывает и обновляет его metadata_connector
-          серверными IAM-правами.
+          Клиент может поставить в очередь только фактическое состояние
+          уже существующей задачи Team_poker.
+
+          Это позволяет не связывать транспортную очередь с ролью
+          admin/lead, но не позволяет участнику подменить оценку:
+          finalEstimate, estimatedRole и estimateVersion сверяются
+          с документом issues/{issueId}.
         */
-        allow create: if canManageEstimation(teamId)
+        allow create: if isTeamMember(teamId)
           && request.resource.data.schemaVersion == 1
           && request.resource.data.type
             == 'sync_team_calculator_estimate'
@@ -224,6 +228,17 @@ service cloud.firestore {
             in ['estimate_finalized', 'reestimate_required']
           && request.resource.data.estimateVersion is number
           && request.resource.data.estimateVersion >= 0
+
+          // Исходная задача обязана реально существовать.
+          && exists(
+            issuePath(
+              teamId,
+              request.resource.data.sessionId,
+              request.resource.data.issueId
+            )
+          )
+
+          // Транспортные поля обязаны совпадать с payload.
           && request.resource.data.payload is map
           && request.resource.data.payload.taskId
             == request.resource.data.issueId
@@ -240,23 +255,66 @@ service cloud.firestore {
             is number
           && request.resource.data.payload.integrationSchemaVersion
             >= 1
+
+          // Роль оценки должна совпадать с самой задачей.
+          && issueData(
+            teamId,
+            request.resource.data.sessionId,
+            request.resource.data.issueId
+          ).estimatedRole
+            == request.resource.data.estimatedRole
+
           && (
             (
               request.resource.data.eventType
                 == 'estimate_finalized'
-              && request.resource.data.finalEstimate is number
-              && request.resource.data.finalEstimate > 0
+
+              // Передавать можно только уже зафиксированную оценку.
+              && issueData(
+                teamId,
+                request.resource.data.sessionId,
+                request.resource.data.issueId
+              ).finalEstimate is number
+              && issueData(
+                teamId,
+                request.resource.data.sessionId,
+                request.resource.data.issueId
+              ).finalEstimate > 0
+              && request.resource.data.finalEstimate
+                == issueData(
+                  teamId,
+                  request.resource.data.sessionId,
+                  request.resource.data.issueId
+                ).finalEstimate
               && request.resource.data.payload.finalEstimate
                 == request.resource.data.finalEstimate
+
+              // Версия также берётся только из самой задачи.
+              && request.resource.data.estimateVersion
+                == issueData(
+                  teamId,
+                  request.resource.data.sessionId,
+                  request.resource.data.issueId
+                ).estimateVersion
             )
             || (
               request.resource.data.eventType
                 == 'reestimate_required'
+
+              // Переоценка разрешена только если задача действительно
+              // находится в таком состоянии.
+              && issueData(
+                teamId,
+                request.resource.data.sessionId,
+                request.resource.data.issueId
+              ).reestimateRequired == true
               && request.resource.data.payload.reestimate is map
               && request.resource.data.payload.reestimate.required
                 == true
             )
           )
+
+          // Job всегда создаётся от имени текущего пользователя.
           && request.resource.data.requestedByUid
             == request.auth.uid
           && request.resource.data.requestedByEmail is string
@@ -265,8 +323,47 @@ service cloud.firestore {
           && request.resource.data.requestedAt is string
           && request.resource.data.updatedAt is string;
 
-        allow update, delete: if false;
+        // Администратор/Тимлид может повторно поставить уже завершённый
+        // job в очередь, но не может изменить саму оценку или payload.
+        // metadata_connector использует Admin SDK и не ограничен Rules.
+        allow update: if canManageEstimation(teamId)
+          && resource.data.status in ['failed', 'succeeded']
+          && request.resource.data.status == 'pending'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly([
+              'status',
+              'error',
+              'retryRequestedByUid',
+              'retryRequestedByEmail',
+              'retryRequestedByDisplayName',
+              'retryRequestedAt',
+              'requestedAt',
+              'updatedAt'
+            ])
+          && request.resource.data.schemaVersion
+            == resource.data.schemaVersion
+          && request.resource.data.type == resource.data.type
+          && request.resource.data.idempotencyKey
+            == resource.data.idempotencyKey
+          && request.resource.data.teamId == resource.data.teamId
+          && request.resource.data.sessionId == resource.data.sessionId
+          && request.resource.data.issueId == resource.data.issueId
+          && request.resource.data.estimatedRole
+            == resource.data.estimatedRole
+          && request.resource.data.eventType == resource.data.eventType
+          && request.resource.data.finalEstimate
+            == resource.data.finalEstimate
+          && request.resource.data.estimateVersion
+            == resource.data.estimateVersion
+          && request.resource.data.payload == resource.data.payload
+          && request.resource.data.retryRequestedByUid
+            == request.auth.uid
+          && request.resource.data.retryRequestedByEmail
+            == currentEmail();
+
+        allow delete: if false;
       }
+
 
       match /delivery_status_refresh/{requestId} {
         allow read: if isTeamMember(teamId);
@@ -317,12 +414,30 @@ service cloud.firestore {
           && request.resource.data.requestedByEmail
             == currentEmail();
 
-        // Клиент может только повторно поставить собственное
-        // завершившееся с ошибкой задание в очередь.
+        // Администратор/Тимлид может повторно поставить в очередь
+        // как failed, так и уже succeeded job. Оценка и адрес GitLab
+        // при этом остаются неизменными.
         // Коннектор использует Admin SDK и не ограничен Rules.
         allow update: if canManageEstimation(teamId)
-          && resource.data.status == 'failed'
+          && resource.data.status in ['failed', 'succeeded']
           && request.resource.data.status == 'pending'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly([
+              'status',
+              'lastError',
+              'nextAttemptAt',
+              'retryRequestedByUid',
+              'retryRequestedByEmail',
+              'retryRequestedByDisplayName',
+              'retryRequestedAt',
+              'requestedAt',
+              'updatedAt'
+            ])
+          && request.resource.data.schemaVersion
+            == resource.data.schemaVersion
+          && request.resource.data.type == resource.data.type
+          && request.resource.data.idempotencyKey
+            == resource.data.idempotencyKey
           && request.resource.data.teamId == resource.data.teamId
           && request.resource.data.sessionId
             == resource.data.sessionId
