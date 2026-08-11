@@ -6934,6 +6934,9 @@ window.TeamPokerIntegration = {
   getCurrentGitLabJobDescriptor: () =>
     currentGitLabJobDescriptor(),
 
+  canManageCurrentEstimation: () =>
+    canManageEstimation(),
+
   getDeliveryStatusDescriptors: () =>
     calculatorDeliveryStatusDescriptors(),
 

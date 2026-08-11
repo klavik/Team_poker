@@ -71,6 +71,10 @@ function addStyles() {
       font-weight:700;
       cursor:pointer;
     }
+    .gitlab-connector-box .gitlab-retry:disabled{
+      cursor:default;
+      opacity:.55;
+    }
   `;
 
   document.head.appendChild(style);
@@ -100,7 +104,12 @@ function ensureBox() {
   return box;
 }
 
-function setStatus(text, type = "", retryHandler = null) {
+function setStatus(
+  text,
+  type = "",
+  retryHandler = null,
+  retryDisabled = false
+) {
   const box = ensureBox();
   if (!box) return;
 
@@ -110,12 +119,17 @@ function setStatus(text, type = "", retryHandler = null) {
 
   box.textContent = text;
 
-  if (retryHandler) {
+  if (retryHandler || retryDisabled) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "gitlab-retry";
-    button.textContent = "Повторить отправку";
-    button.addEventListener("click", retryHandler);
+    button.textContent = "Передать повторно";
+    button.disabled = retryDisabled;
+
+    if (retryHandler && !retryDisabled) {
+      button.addEventListener("click", retryHandler);
+    }
+
     box.appendChild(document.createElement("br"));
     box.appendChild(button);
   }
@@ -128,6 +142,16 @@ function configured() {
     config.enabled !== false
     && baseUrl
     && !baseUrl.includes("REPLACE_")
+  );
+}
+
+function canManualRetry() {
+  const api = window.TeamPokerIntegration;
+
+  return Boolean(
+    api
+    && typeof api.canManageCurrentEstimation === "function"
+    && api.canManageCurrentEstimation()
   );
 }
 
@@ -166,12 +190,22 @@ function humanDate(value) {
 }
 
 async function retryJob(ref, descriptor) {
+  if (!canManualRetry()) {
+    setStatus(
+      "Повторная передача доступна Администратору и Тимлиду.",
+      "error"
+    );
+    return;
+  }
+
   const now = Date.now();
 
   if (now - lastRetryAt < RETRY_DELAY_MS) {
     setStatus(
-      "Повторная отправка уже запрошена. Подождите немного.",
-      "warn"
+      "Повторная передача уже запрошена. Подождите немного.",
+      "warn",
+      null,
+      true
     );
     return;
   }
@@ -179,24 +213,90 @@ async function retryJob(ref, descriptor) {
   lastRetryAt = now;
 
   try {
-    await updateDoc(ref, {
-      status: "pending",
-      lastError: null,
-      nextAttemptAt: null,
-      retryRequestedByUid: currentUser.uid,
-      retryRequestedByEmail: currentUser.email || "",
-      requestedAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
+    const snapshot = await getDoc(ref);
+
+    if (!snapshot.exists()) {
+      await setDoc(ref, {
+        schemaVersion: 1,
+        type: "sync_gitlab_estimate",
+        status: "pending",
+        idempotencyKey: descriptor.id,
+
+        teamId: descriptor.teamId,
+        sessionId: descriptor.sessionId,
+        issueId: descriptor.issueId,
+        issueTitle: "",
+        externalTaskUrl: descriptor.externalTaskUrl,
+
+        estimatedRole: descriptor.estimatedRole,
+        finalEstimate: Number(descriptor.finalEstimate),
+        estimateVersion: Number(descriptor.estimateVersion),
+        gitlabLabel: String(
+          config.label || "estimate::done"
+        ).trim() || "estimate::done",
+        gitlabBaseUrl: String(
+          config.gitlabBaseUrl || ""
+        ).trim().replace(/\/+$/, ""),
+
+        requestedByUid: currentUser.uid,
+        requestedByEmail: currentUser.email || "",
+        requestedByDisplayName:
+          currentUser.displayName
+          || currentUser.email
+          || "",
+        requestedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        attempts: 0
+      });
+    } else {
+      const job = snapshot.data() || {};
+
+      if (["pending", "processing"].includes(job.status)) {
+        setStatus(
+          job.status === "processing"
+            ? "Mac-коннектор уже передаёт оценку в GitLab…"
+            : "Оценка уже ожидает Mac-коннектор.",
+          "warn",
+          null,
+          true
+        );
+        return;
+      }
+
+      if (!["failed", "succeeded"].includes(job.status)) {
+        throw new Error(
+          `Нельзя повторить job со статусом ${job.status || "—"}`
+        );
+      }
+
+      await updateDoc(ref, {
+        status: "pending",
+        lastError: null,
+        nextAttemptAt: null,
+        retryRequestedByUid: currentUser.uid,
+        retryRequestedByEmail: currentUser.email || "",
+        retryRequestedByDisplayName:
+          currentUser.displayName
+          || currentUser.email
+          || "",
+        retryRequestedAt: serverTimestamp(),
+        requestedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }
 
     setStatus(
-      "Повторная отправка поставлена в очередь. Коннектор выполнит её после подключения VPN.",
-      "warn"
+      "Повторная передача в GitLab поставлена в очередь.",
+      "warn",
+      null,
+      true
     );
   } catch (error) {
     console.error(error);
     setStatus(
-      "Не удалось повторно поставить задание в очередь.",
+      `Не удалось повторно поставить задание GitLab в очередь: ${
+        error?.message || error
+      }.`,
       "error",
       () => retryJob(ref, descriptor)
     );
@@ -242,8 +342,11 @@ async function render() {
 
     if (!snapshot.exists()) {
       setStatus(
-        "Для этой оценки ещё нет задания GitLab. Повторно зафиксируйте оценку под ролью Администратор или Тимлид.",
-        "warn"
+        "Для этой зафиксированной оценки ещё нет задания GitLab.",
+        "warn",
+        canManualRetry()
+          ? () => retryJob(ref, descriptor)
+          : null
       );
       return;
     }
@@ -253,7 +356,9 @@ async function render() {
     if (job.status === "pending") {
       setStatus(
         "Ожидает Mac-коннектор. Включите MacBook и подключите корпоративный VPN.",
-        "warn"
+        "warn",
+        null,
+        canManualRetry()
       );
       return;
     }
@@ -261,7 +366,9 @@ async function render() {
     if (job.status === "processing") {
       setStatus(
         "Mac-коннектор передаёт оценку в GitLab…",
-        "warn"
+        "warn",
+        null,
+        canManualRetry()
       );
       return;
     }
@@ -275,7 +382,10 @@ async function render() {
       setStatus(
         `Передано в GitLab: ${estimate}; метка ${job.gitlabLabel || "estimate::done"} установлена`
         + (completedAt ? ` · ${completedAt}` : ""),
-        "ok"
+        "ok",
+        canManualRetry()
+          ? () => retryJob(ref, descriptor)
+          : null
       );
       return;
     }
@@ -284,7 +394,9 @@ async function render() {
       setStatus(
         `Ошибка передачи в GitLab: ${job.lastError || "неизвестная ошибка"}`,
         "error",
-        () => retryJob(ref, descriptor)
+        canManualRetry()
+          ? () => retryJob(ref, descriptor)
+          : null
       );
       return;
     }

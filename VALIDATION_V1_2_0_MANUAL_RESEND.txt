@@ -1,0 +1,35 @@
+Team_poker v1.2.0 — manual resend validation
+==============================================
+
+JavaScript syntax:
+- app.js: OK (node --check)
+- gitlab-integration-status.js: OK (node --check)
+- calculator-integration-status.js: OK (node --check)
+
+Behavior:
+- GitLab success -> "Передать повторно": implemented
+- GitLab failure -> "Передать повторно": implemented
+- GitLab pending/processing -> button disabled: implemented
+- Missing GitLab job -> recreate same estimateVersion: implemented
+- Team_calculator success -> "Передать повторно": implemented
+- Team_calculator failure -> "Передать повторно": implemented
+- Team_calculator pending/processing -> button disabled: implemented
+- Missing Team_calculator job -> recreate same estimateVersion: implemented
+- Manual resend does not modify issue.finalEstimate: OK
+- Manual resend does not increment issue.estimateVersion: OK
+- Manual resend does not create voting round: OK
+- Manual resend is exposed only to Admin/Lead in UI: OK
+
+Firestore Rules:
+- GitLab failed/succeeded -> pending allowed only for Admin/Lead: implemented
+- Team_calculator failed/succeeded -> pending allowed only for Admin/Lead: implemented
+- Immutable estimate/job payload fields preserved: implemented
+- No new Firestore collection or index required: OK
+
+Connectors:
+- Team_calculator metadata_connector v1.4.10: no change required
+- Team_poker GitLab Mac connector: no change required
+
+Index/resources:
+- index.html referenced local resources exist: OK
+- visible version: v1.2.0
