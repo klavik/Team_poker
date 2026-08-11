@@ -2638,7 +2638,9 @@ function startIssuesListener() {
       state.issues = snapshot.docs
         .map(issueDoc => ({
           id: issueDoc.id,
-          ...issueDoc.data()
+          ...issueDoc.data(),
+          _hasPendingWrites:
+            issueDoc.metadata.hasPendingWrites === true
         }))
         .filter(
           issue => issue.moveState !== "copying"
@@ -2725,7 +2727,9 @@ function startIssuesListener() {
         return;
       }
 
-      const subscriptionKey = `${state.issue.id}:${state.issue.currentRound}:${state.issue.status}`;
+      const subscriptionKey =
+        voteSubscriptionKey(state.issue);
+
       if (subscriptionKey !== activeVoteSubscriptionKey) {
         startVoteListeners();
       }
@@ -4182,13 +4186,69 @@ function voteDocId(round, uid) {
   return `${round}_${uid}`;
 }
 
+function voteSubscriptionKey(issue = state.issue) {
+  if (!issue) return null;
+
+  return [
+    issue.id,
+    Number(issue.currentRound || 0),
+    String(issue.status || ""),
+    issue._hasPendingWrites === true
+      ? "local"
+      : "server"
+  ].join(":");
+}
+
+function isActiveVoteSubscription(key) {
+  return Boolean(
+    key
+    && activeVoteSubscriptionKey === key
+    && state.issue
+    && voteSubscriptionKey(state.issue) === key
+  );
+}
+
+function handleVoteSubscriptionError(
+  error,
+  subscriptionKey,
+  source
+) {
+  if (!isActiveVoteSubscription(subscriptionKey)) {
+    console.debug(
+      `Игнорируется ошибка устаревшей подписки ${source}`,
+      error
+    );
+    return;
+  }
+
+  handleError(error);
+}
+
 function startVoteListeners() {
   clearVoteListeners();
 
   if (!state.issue) return;
 
-  activeVoteSubscriptionKey =
-    `${state.issue.id}:${state.issue.currentRound}:${state.issue.status}`;
+  const subscriptionKey =
+    voteSubscriptionKey(state.issue);
+
+  activeVoteSubscriptionKey = subscriptionKey;
+
+  /*
+    После локальной записи Firestore немедленно присылает optimistic
+    snapshot с hasPendingWrites=true. Но security rules на сервере ещё
+    могут видеть предыдущее status/currentRound. Если в этот момент
+    подписаться на раскрытые/исторические голоса, сервер может законно
+    ответить permission-denied и listener больше не восстановится.
+
+    Ждём server-ack. QuerySnapshot issues после подтверждения даст новый
+    document snapshot с hasPendingWrites=false; subscription key сменится
+    с :local на :server и подписки будут запущены автоматически.
+  */
+  if (state.issue._hasPendingWrites === true) {
+    renderIssue();
+    return;
+  }
 
   const issueBase = [
     "teams", state.teamId,
@@ -4215,6 +4275,8 @@ function startVoteListeners() {
   unsubscribeOwnVote = onSnapshot(
     ownVotesQuery,
     snapshot => {
+      if (!isActiveVoteSubscription(subscriptionKey)) return;
+
       const voteDoc = snapshot.docs.find(
         item => Number(item.data().round) === round
       );
@@ -4225,7 +4287,11 @@ function startVoteListeners() {
 
       renderIssue();
     },
-    error => handleError(error)
+    error => handleVoteSubscriptionError(
+      error,
+      subscriptionKey,
+      "own-vote"
+    )
   );
 
   const statusQuery = query(
@@ -4236,28 +4302,46 @@ function startVoteListeners() {
   unsubscribeVoteStatuses = onSnapshot(
     statusQuery,
     snapshot => {
+      if (!isActiveVoteSubscription(subscriptionKey)) return;
+
       state.voteStatuses = snapshot.docs.map(statusDoc => ({
         id: statusDoc.id,
         ...statusDoc.data()
       }));
       renderIssue();
     },
-    error => handleError(error)
+    error => handleVoteSubscriptionError(
+      error,
+      subscriptionKey,
+      "vote-status"
+    )
   );
 
   unsubscribeRounds = onSnapshot(
     collection(db, ...issueBase, "rounds"),
     { includeMetadataChanges: true },
     snapshot => {
+      if (!isActiveVoteSubscription(subscriptionKey)) return;
+
       state.rounds = snapshot.docs
         .map(roundDoc => ({ id: roundDoc.id, ...roundDoc.data() }))
         .sort((a, b) => Number(b.round) - Number(a.round));
       renderRoundHistory();
     },
-    error => handleError(error)
+    error => handleVoteSubscriptionError(
+      error,
+      subscriptionKey,
+      "rounds"
+    )
   );
 
-  loadLegacyHistoricalVotes().catch(error => handleError(error));
+  loadLegacyHistoricalVotes(subscriptionKey).catch(
+    error => handleVoteSubscriptionError(
+      error,
+      subscriptionKey,
+      "historical-votes"
+    )
+  );
 
   if (["revealed", "estimated"].includes(state.issue.status)) {
     const votesQuery = query(
@@ -4268,12 +4352,18 @@ function startVoteListeners() {
     unsubscribeVotes = onSnapshot(
       votesQuery,
       snapshot => {
+        if (!isActiveVoteSubscription(subscriptionKey)) return;
+
         state.votes = snapshot.docs
           .map(voteDoc => ({ id: voteDoc.id, ...voteDoc.data() }))
           .sort((a, b) => timestampValue(a.updatedAt) - timestampValue(b.updatedAt));
         renderIssue();
       },
-      error => handleError(error)
+      error => handleVoteSubscriptionError(
+        error,
+        subscriptionKey,
+        "revealed-votes"
+      )
     );
   }
 }
@@ -4314,11 +4404,11 @@ function calculateVoteStats(votes) {
   };
 }
 
-async function loadLegacyHistoricalVotes() {
+async function loadLegacyHistoricalVotes(subscriptionKey = activeVoteSubscriptionKey) {
   state.historicalVotes = [];
 
   const issue = state.issue;
-  if (!issue) {
+  if (!issue || !isActiveVoteSubscription(subscriptionKey)) {
     renderRoundHistory();
     return;
   }
@@ -4358,6 +4448,7 @@ async function loadLegacyHistoricalVotes() {
 
     // Пользователь уже переключился на другую задачу — результат не применяем.
     if (
+      !isActiveVoteSubscription(subscriptionKey) ||
       state.teamId !== requestedTeamId ||
       state.sessionId !== requestedSessionId ||
       state.issue?.id !== requestedIssueId
