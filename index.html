@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Team_poker v1.2.0</title>
+  <title>Team_poker v1.3.1</title>
   <link rel="icon" type="image/svg+xml" href="./favicon-spade.svg">
   <link rel="stylesheet" href="./styles.css">
   <script src="./firebase-config.js"></script>
@@ -23,7 +23,7 @@
         height="44"
       >
       <div class="brand-copy">
-        <h1>Team_poker <span class="app-version">v1.2.0</span></h1>
+        <h1>Team_poker <span class="app-version">v1.3.1</span></h1>
         <p>Оценка backend- и frontend-задач в человеко-днях</p>
       </div>
     </div>
@@ -115,6 +115,14 @@
         <div class="panel-title-row issues-panel-header">
           <h2>Задачи</h2>
           <div class="panel-title-actions">
+            <button
+              id="discoverGitLabIssuesBtn"
+              class="button secondary compact"
+              type="button"
+              title="Найти в GitLab открытые задачи текущего направления, которых ещё нет в Team_poker"
+            >
+              Найти задачи для оценки
+            </button>
             <button
               id="refreshTaskStatusesBtn"
               class="button secondary compact"
@@ -472,6 +480,51 @@
     </div>
 
     <div id="editSessionMessage" class="form-message"></div>
+  </form>
+</dialog>
+
+
+<dialog id="gitlabDiscoveryDialog" class="gitlab-discovery-dialog">
+  <form method="dialog" class="dialog-card wide-dialog" onsubmit="return false">
+    <div class="dialog-title-row">
+      <div>
+        <h2>Найти задачи для оценки</h2>
+        <div id="gitlabDiscoveryContext" class="muted small"></div>
+      </div>
+      <button id="closeGitLabDiscoveryBtn" class="button secondary icon-button" type="button">×</button>
+    </div>
+
+    <div id="gitlabDiscoveryMessage" class="form-message"></div>
+
+    <div id="gitlabDiscoveryProgress" class="message info hidden"></div>
+
+    <div id="gitlabDiscoveryResults" class="hidden">
+      <div class="gitlab-discovery-toolbar">
+        <label class="gitlab-discovery-select-all">
+          <input id="gitlabDiscoverySelectAll" type="checkbox">
+          <span>Выбрать все найденные</span>
+        </label>
+        <span id="gitlabDiscoverySelectedCount" class="muted small"></span>
+      </div>
+
+      <div id="gitlabDiscoveryCandidates" class="gitlab-discovery-list"></div>
+
+      <details id="gitlabDiscoveryExistingDetails" class="gitlab-discovery-details hidden">
+        <summary id="gitlabDiscoveryExistingSummary"></summary>
+        <div id="gitlabDiscoveryExisting" class="gitlab-discovery-list secondary-list"></div>
+      </details>
+
+      <details id="gitlabDiscoveryConflictsDetails" class="gitlab-discovery-details hidden">
+        <summary id="gitlabDiscoveryConflictsSummary"></summary>
+        <div id="gitlabDiscoveryConflicts" class="gitlab-discovery-list secondary-list"></div>
+      </details>
+    </div>
+
+    <div class="actions">
+      <button id="requestGitLabDiscoveryBtn" class="button secondary" type="button">Обновить поиск</button>
+      <button id="importGitLabCandidatesBtn" class="button primary" type="button" disabled>Добавить выбранные</button>
+      <button id="cancelGitLabDiscoveryBtn" class="button secondary" type="button">Закрыть</button>
+    </div>
   </form>
 </dialog>
 
