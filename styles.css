@@ -1584,3 +1584,117 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
     line-height: 1.15;
   }
 }
+
+/* === v1.3.2 — Tasks panel buttons visibility fix === */
+/*
+  The "Задачи" column is intentionally narrow (290–340px), so its action
+  controls must adapt to the column width rather than to the viewport width.
+  This block is intentionally placed last so it safely overrides older
+  generic toolbar/media rules without changing application logic.
+*/
+
+.issues-panel-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.issues-panel-header > h2 {
+  margin: 0;
+}
+
+.issues-panel-header .panel-title-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+}
+
+.issues-panel-header .panel-title-actions > .button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 38px;
+  padding: 8px 9px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.issues-panel-header .panel-title-actions > .icon-button {
+  width: 38px;
+  min-width: 38px;
+  justify-self: end;
+}
+
+#bulkVotingControls.bulk-voting-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  align-items: stretch;
+  min-width: 0;
+  overflow: visible;
+}
+
+#bulkVotingControls #selectAllVotingIssuesBtn {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+#bulkVotingControls .bulk-voting-count {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+#bulkVotingControls .bulk-task-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  margin-left: 0;
+}
+
+#bulkVotingControls .bulk-task-actions > .button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 38px;
+  padding: 8px 9px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
+  text-align: center;
+}
+
+#bulkVotingControls #startSelectedVotingBtn {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+/* On truly narrow screens keep every action on its own line. */
+@media (max-width: 520px) {
+  .issues-panel-header .panel-title-actions,
+  #bulkVotingControls .bulk-task-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .issues-panel-header .panel-title-actions > .icon-button {
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+  }
+
+  #bulkVotingControls #startSelectedVotingBtn {
+    grid-column: auto;
+  }
+}
