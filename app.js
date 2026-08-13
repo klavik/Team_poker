@@ -123,6 +123,17 @@ const issueGitLabStatusFilters = {
 let deliveryStatusRefreshInProgress = false;
 let deliveryStatusRefreshUnsubscribe = null;
 
+/*
+  GitLab discovery работает через metadata_connector.py:
+  браузер создаёт отдельный discovery job, коннектор запрашивает GitLab и возвращает кандидатов.
+*/
+let gitlabDiscoveryUnsubscribe = null;
+let gitlabDiscoveryJobRef = null;
+let gitlabDiscoveryCandidates = [];
+let gitlabDiscoveryExisting = [];
+let gitlabDiscoveryConflicts = [];
+let gitlabDiscoveryInProgress = false;
+
 const $ = id => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -527,6 +538,7 @@ function clearAllListeners() {
   unsubscribeUsers = null;
 
   clearDeliveryStatusRefreshListener();
+  clearGitLabDiscoveryListener();
   clearTeamListeners();
 }
 
@@ -619,6 +631,30 @@ function bindEvents() {
 
   $("openIssueDialogBtn").addEventListener("click", () => openDialog("issueDialog"));
   $("createIssueBtn").addEventListener("click", createIssue);
+  $("discoverGitLabIssuesBtn").addEventListener(
+    "click",
+    openGitLabDiscoveryDialog
+  );
+  $("requestGitLabDiscoveryBtn").addEventListener(
+    "click",
+    requestGitLabDiscovery
+  );
+  $("importGitLabCandidatesBtn").addEventListener(
+    "click",
+    importSelectedGitLabCandidates
+  );
+  $("gitlabDiscoverySelectAll").addEventListener(
+    "change",
+    toggleAllGitLabDiscoveryCandidates
+  );
+  $("closeGitLabDiscoveryBtn").addEventListener(
+    "click",
+    closeGitLabDiscoveryDialog
+  );
+  $("cancelGitLabDiscoveryBtn").addEventListener(
+    "click",
+    closeGitLabDiscoveryDialog
+  );
   $("refreshTaskStatusesBtn").addEventListener(
     "click",
     requestTaskStatusesRefresh
@@ -1196,6 +1232,8 @@ function selectTeam(teamId) {
   bulkVotingInProgress = false;
   bulkMoveInProgress = false;
   clearDeliveryStatusRefreshListener();
+  clearGitLabDiscoveryListener();
+  resetGitLabDiscoveryState();
   resetIssueGitLabStatusFilters();
   clearCalculatorDeliveryStatuses();
 
@@ -1230,6 +1268,8 @@ function resetTeamDependentState() {
   bulkVotingInProgress = false;
   bulkMoveInProgress = false;
   clearDeliveryStatusRefreshListener();
+  clearGitLabDiscoveryListener();
+  resetGitLabDiscoveryState();
   resetIssueGitLabStatusFilters();
   clearCalculatorDeliveryStatuses();
 
@@ -1302,6 +1342,9 @@ function renderTeamControls() {
 
   $("openIssueDialogBtn").disabled =
     !canCreateIssue() || !state.sessionId;
+
+  $("discoverGitLabIssuesBtn").disabled =
+    !estimationManager || !state.sessionId || gitlabDiscoveryInProgress;
 
   $("editSessionBtn").disabled =
     !estimationManager || !state.sessionId;
@@ -1929,6 +1972,8 @@ function selectSession(sessionId) {
   bulkVotingInProgress = false;
   bulkMoveInProgress = false;
   clearDeliveryStatusRefreshListener();
+  clearGitLabDiscoveryListener();
+  resetGitLabDiscoveryState();
   resetIssueGitLabStatusFilters();
   clearCalculatorDeliveryStatuses();
 
@@ -4068,6 +4113,497 @@ async function saveIssueChanges() {
       handleError(error, target);
     }
   });
+}
+
+
+function clearGitLabDiscoveryListener() {
+  unsubscribe(gitlabDiscoveryUnsubscribe);
+  gitlabDiscoveryUnsubscribe = null;
+  gitlabDiscoveryJobRef = null;
+}
+
+function resetGitLabDiscoveryState() {
+  gitlabDiscoveryCandidates = [];
+  gitlabDiscoveryExisting = [];
+  gitlabDiscoveryConflicts = [];
+  gitlabDiscoveryInProgress = false;
+}
+
+function gitLabDiscoveryDirection() {
+  const session = currentSession();
+  const team = currentTeamSnapshot();
+  return sessionDevelopmentArea(session) || team.developmentArea || null;
+}
+
+function gitLabDiscoveryDirectionLabel(value) {
+  return value === "backend" ? "Backend"
+    : value === "frontend" ? "Frontend"
+      : "—";
+}
+
+function gitLabDiscoveryReference(item) {
+  const projectPath = String(item?.projectPath || "").trim();
+  const iid = Number(item?.issueIid || 0);
+  return projectPath && iid ? `${projectPath}#${iid}` : "GitLab issue";
+}
+
+function formatGitLabDiscoveryAssignees(item) {
+  const names = Array.isArray(item?.assignees) ? item.assignees : [];
+  return names.length ? names.join(", ") : "не назначен";
+}
+
+function renderGitLabDiscoveryStaticItem(item, reason = "") {
+  const url = String(item?.webUrl || "").trim();
+  const title = String(item?.title || "Задача без названия");
+  const ref = gitLabDiscoveryReference(item);
+  const location = String(item?.existingLocation || "").trim();
+  const meta = [
+    ref,
+    gitLabDiscoveryDirectionLabel(item?.direction),
+    reason || null,
+    location || null
+  ].filter(Boolean).join(" · ");
+
+  return `
+    <div class="gitlab-discovery-item static">
+      <div>
+        <div class="gitlab-discovery-item-title">
+          ${url
+            ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>`
+            : escapeHtml(title)}
+        </div>
+        <div class="gitlab-discovery-item-meta">${escapeHtml(meta)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function selectedGitLabDiscoveryIndexes() {
+  return Array.from(
+    document.querySelectorAll(
+      '#gitlabDiscoveryCandidates input[data-discovery-index]:checked'
+    )
+  ).map(input => Number(input.dataset.discoveryIndex))
+    .filter(index => Number.isInteger(index));
+}
+
+function updateGitLabDiscoverySelectionUi() {
+  const selected = selectedGitLabDiscoveryIndexes();
+  const selectAll = $("gitlabDiscoverySelectAll");
+  const total = gitlabDiscoveryCandidates.length;
+
+  $("gitlabDiscoverySelectedCount").textContent = total
+    ? `Выбрано ${selected.length} из ${total}`
+    : "";
+
+  $("importGitLabCandidatesBtn").disabled =
+    !selected.length || gitlabDiscoveryInProgress;
+
+  selectAll.checked = total > 0 && selected.length === total;
+  selectAll.indeterminate = selected.length > 0 && selected.length < total;
+}
+
+function toggleAllGitLabDiscoveryCandidates(event) {
+  const checked = event.target.checked;
+  document.querySelectorAll(
+    '#gitlabDiscoveryCandidates input[data-discovery-index]'
+  ).forEach(input => {
+    input.checked = checked;
+  });
+  updateGitLabDiscoverySelectionUi();
+}
+
+function renderGitLabDiscoveryResult(job = {}) {
+  gitlabDiscoveryCandidates = Array.isArray(job.candidates)
+    ? job.candidates
+    : [];
+  gitlabDiscoveryExisting = Array.isArray(job.alreadyExisting)
+    ? job.alreadyExisting
+    : [];
+  gitlabDiscoveryConflicts = Array.isArray(job.conflicts)
+    ? job.conflicts
+    : [];
+
+  const candidateRoot = $("gitlabDiscoveryCandidates");
+  const existingRoot = $("gitlabDiscoveryExisting");
+  const conflictRoot = $("gitlabDiscoveryConflicts");
+
+  candidateRoot.innerHTML = gitlabDiscoveryCandidates.length
+    ? gitlabDiscoveryCandidates.map((item, index) => {
+        const url = String(item?.webUrl || "").trim();
+        const title = String(item?.title || "Задача без названия");
+        const labels = Array.isArray(item?.labels) ? item.labels : [];
+        const meta = [
+          gitLabDiscoveryReference(item),
+          gitLabDiscoveryDirectionLabel(item?.direction),
+          `Исполнитель: ${formatGitLabDiscoveryAssignees(item)}`,
+          labels.length ? `labels: ${labels.join(", ")}` : null
+        ].filter(Boolean).join(" · ");
+
+        return `
+          <label class="gitlab-discovery-item">
+            <input
+              type="checkbox"
+              data-discovery-index="${index}"
+              checked
+            >
+            <div>
+              <div class="gitlab-discovery-item-title">
+                ${url
+                  ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${escapeHtml(title)}</a>`
+                  : escapeHtml(title)}
+              </div>
+              <div class="gitlab-discovery-item-meta">${escapeHtml(meta)}</div>
+            </div>
+          </label>
+        `;
+      }).join("")
+    : '<div class="empty-state">Новых задач для оценки не найдено.</div>';
+
+  candidateRoot.querySelectorAll(
+    'input[data-discovery-index]'
+  ).forEach(input => {
+    input.addEventListener("change", updateGitLabDiscoverySelectionUi);
+  });
+
+  existingRoot.innerHTML = gitlabDiscoveryExisting
+    .map(item => renderGitLabDiscoveryStaticItem(
+      item,
+      "уже есть в Team_poker"
+    ))
+    .join("");
+
+  $("gitlabDiscoveryExistingSummary").textContent =
+    `Не добавлены — уже есть в Team_poker (${gitlabDiscoveryExisting.length})`;
+  show(
+    $("gitlabDiscoveryExistingDetails"),
+    gitlabDiscoveryExisting.length > 0
+  );
+
+  conflictRoot.innerHTML = gitlabDiscoveryConflicts
+    .map(item => renderGitLabDiscoveryStaticItem(
+      item,
+      "конфликт: одновременно Backend и Frontend"
+    ))
+    .join("");
+
+  $("gitlabDiscoveryConflictsSummary").textContent =
+    `Не добавлены — конфликт направления (${gitlabDiscoveryConflicts.length})`;
+  show(
+    $("gitlabDiscoveryConflictsDetails"),
+    gitlabDiscoveryConflicts.length > 0
+  );
+
+  show($("gitlabDiscoveryResults"), true);
+  show($("gitlabDiscoveryProgress"), false);
+
+  const searchedCount = Number(job.searchedCount || 0);
+  const suffix = job.truncated === true
+    ? " Результат ограничен лимитом коннектора."
+    : "";
+
+  setFormMessage(
+    $("gitlabDiscoveryMessage"),
+    `Проверено задач GitLab: ${searchedCount}. Новых: ${gitlabDiscoveryCandidates.length}.`
+      + suffix,
+    "success"
+  );
+
+  updateGitLabDiscoverySelectionUi();
+}
+
+function closeGitLabDiscoveryDialog() {
+  closeDialog("gitlabDiscoveryDialog");
+}
+
+function openGitLabDiscoveryDialog() {
+  if (!canManageEstimation() || !state.teamId || !state.sessionId) return;
+
+  const direction = gitLabDiscoveryDirection();
+  if (!isValidDevelopmentArea(direction)) {
+    toast("Для текущей сессии не определено направление разработки.", "error");
+    return;
+  }
+
+  $("gitlabDiscoveryContext").textContent =
+    `Текущая сессия: ${currentSession()?.name || "—"} · ${gitLabDiscoveryDirectionLabel(direction)}`;
+  setFormMessage($("gitlabDiscoveryMessage"));
+  show($("gitlabDiscoveryResults"), false);
+  show($("gitlabDiscoveryProgress"), false);
+  $("importGitLabCandidatesBtn").disabled = true;
+  $("gitlabDiscoverySelectAll").checked = false;
+  $("gitlabDiscoverySelectAll").indeterminate = false;
+  openDialog("gitlabDiscoveryDialog");
+
+  requestGitLabDiscovery();
+}
+
+async function requestGitLabDiscovery() {
+  if (
+    gitlabDiscoveryInProgress
+    || !canManageEstimation()
+    || !state.teamId
+    || !state.sessionId
+  ) return;
+
+  const direction = gitLabDiscoveryDirection();
+  if (!isValidDevelopmentArea(direction)) {
+    return setFormMessage(
+      $("gitlabDiscoveryMessage"),
+      "Для текущей сессии не определено направление разработки."
+    );
+  }
+
+  clearGitLabDiscoveryListener();
+  resetGitLabDiscoveryState();
+  gitlabDiscoveryInProgress = true;
+  renderTeamControls();
+
+  show($("gitlabDiscoveryResults"), false);
+  show($("gitlabDiscoveryProgress"), true);
+  $("gitlabDiscoveryProgress").textContent =
+    "Запрос поставлен в очередь. Ожидается Mac-коннектор…";
+  setFormMessage($("gitlabDiscoveryMessage"));
+  $("requestGitLabDiscoveryBtn").disabled = true;
+  $("importGitLabCandidatesBtn").disabled = true;
+
+  try {
+    const actor = currentActorSnapshot();
+    const jobRef = doc(
+      collection(db, "teams", state.teamId, "gitlab_discovery_jobs")
+    );
+
+    await setDoc(jobRef, {
+      schemaVersion: 1,
+      type: "discover_estimation_candidates",
+      status: "pending",
+      teamId: state.teamId,
+      sessionId: state.sessionId,
+      targetDirection: direction,
+      requestedByUid: actor.uid,
+      requestedByEmail: actor.email,
+      requestedByDisplayName: actor.displayName,
+      requestedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      attempts: 0
+    });
+
+    gitlabDiscoveryJobRef = jobRef;
+    const requestTeamId = state.teamId;
+    const requestSessionId = state.sessionId;
+
+    gitlabDiscoveryUnsubscribe = onSnapshot(
+      jobRef,
+      { includeMetadataChanges: true },
+      snapshot => {
+        if (
+          requestTeamId !== state.teamId
+          || requestSessionId !== state.sessionId
+          || !snapshot.exists()
+        ) return;
+
+        const job = snapshot.data() || {};
+
+        if (job.status === "pending") {
+          $("gitlabDiscoveryProgress").textContent =
+            "Ожидается Mac-коннектор…";
+          return;
+        }
+
+        if (job.status === "processing") {
+          $("gitlabDiscoveryProgress").textContent =
+            "Mac-коннектор запрашивает GitLab и сравнивает задачи с Team_poker…";
+          return;
+        }
+
+        gitlabDiscoveryInProgress = false;
+        $("requestGitLabDiscoveryBtn").disabled = false;
+        renderTeamControls();
+
+        if (job.status === "succeeded") {
+          renderGitLabDiscoveryResult(job);
+          return;
+        }
+
+        if (job.status === "failed") {
+          show($("gitlabDiscoveryProgress"), false);
+          setFormMessage(
+            $("gitlabDiscoveryMessage"),
+            `Ошибка поиска в GitLab: ${job.lastError || "неизвестная ошибка"}`
+          );
+        }
+      },
+      error => {
+        gitlabDiscoveryInProgress = false;
+        $("requestGitLabDiscoveryBtn").disabled = false;
+        renderTeamControls();
+        show($("gitlabDiscoveryProgress"), false);
+        handleError(error, $("gitlabDiscoveryMessage"));
+      }
+    );
+  } catch (error) {
+    gitlabDiscoveryInProgress = false;
+    $("requestGitLabDiscoveryBtn").disabled = false;
+    renderTeamControls();
+    show($("gitlabDiscoveryProgress"), false);
+    handleError(error, $("gitlabDiscoveryMessage"));
+  }
+}
+
+async function importSelectedGitLabCandidates() {
+  if (!canManageEstimation() || !state.teamId || !state.sessionId) return;
+
+  const indexes = selectedGitLabDiscoveryIndexes();
+  const selected = indexes
+    .map(index => gitlabDiscoveryCandidates[index])
+    .filter(Boolean);
+
+  if (!selected.length) return;
+
+  const direction = gitLabDiscoveryDirection();
+  if (!isValidDevelopmentArea(direction)) return;
+
+  const invalidDirection = selected.find(
+    item => item.direction !== direction
+  );
+  if (invalidDirection) {
+    return setFormMessage(
+      $("gitlabDiscoveryMessage"),
+      "В результатах есть задача другого направления. Обновите поиск."
+    );
+  }
+
+  await withButton(
+    $("importGitLabCandidatesBtn"),
+    "Добавление...",
+    async () => {
+      try {
+        const actor = currentActorSnapshot();
+        const teamSnapshot = currentTeamSnapshot();
+        const session = currentSession();
+        const existingUrls = new Set(
+          state.issues
+            .map(issue => normalizeGitlabIssueUrl(issue.gitlabUrl))
+            .filter(Boolean)
+        );
+        const fresh = selected.filter(item => {
+          const normalized = normalizeGitlabIssueUrl(item.webUrl);
+          return normalized && !existingUrls.has(normalized);
+        });
+
+        if (!fresh.length) {
+          setFormMessage(
+            $("gitlabDiscoveryMessage"),
+            "Выбранные задачи уже появились в текущей сессии. Обновите поиск."
+          );
+          return;
+        }
+
+        if (fresh.length > 150) {
+          setFormMessage(
+            $("gitlabDiscoveryMessage"),
+            "За один раз можно добавить не более 150 задач."
+          );
+          return;
+        }
+
+        const minOrder = state.issues.length
+          ? state.issues.reduce(
+              (minimum, issue) => Math.min(
+                minimum,
+                Number(issue.sortOrder || 0)
+              ),
+              Number.POSITIVE_INFINITY
+            )
+          : 0;
+
+        const batch = writeBatch(db);
+        let firstIssueId = null;
+
+        fresh.forEach((item, index) => {
+          const issueRef = doc(
+            collection(
+              db,
+              "teams", state.teamId,
+              "sessions", state.sessionId,
+              "issues"
+            )
+          );
+          const auditRef = createIssueAuditRef();
+          if (!firstIssueId) firstIssueId = issueRef.id;
+
+          const title = String(item.title || "Задача без названия").slice(0, 300);
+          const gitlabUrl = String(item.webUrl || "").trim();
+          const description = String(item.description || "").trim().slice(0, 4000);
+
+          batch.set(issueRef, {
+            title,
+            gitlabUrl,
+            description: description || null,
+            currentRound: 1,
+            status: "pending",
+            finalEstimate: null,
+            estimatedRole: direction,
+            estimatedTeamId: teamSnapshot.id,
+            estimatedTeamName: teamSnapshot.name,
+            estimateVersion: 0,
+            developmentAreaCapturedAt: serverTimestamp(),
+            sortOrder: minOrder - (fresh.length - index) * 10,
+            gitlabIssueId: Number(item.issueId || 0) || null,
+            gitlabProjectId: Number(item.projectId || 0) || null,
+            gitlabProjectPath: String(item.projectPath || "") || null,
+            gitlabIssueIid: Number(item.issueIid || 0) || null,
+            gitlabImportedAt: serverTimestamp(),
+            createdByUid: actor.uid,
+            createdByEmail: actor.email,
+            createdByDisplayName: actor.displayName,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+
+          batch.set(
+            auditRef,
+            buildIssueAuditEvent({
+              action: "created",
+              issueId: issueRef.id,
+              issueTitle: title,
+              snapshot: {
+                title,
+                gitlabUrl,
+                description: description || null,
+                source: "gitlab_discovery"
+              }
+            })
+          );
+        });
+
+        if (!isValidDevelopmentArea(session?.developmentArea)) {
+          batch.update(
+            doc(db, "teams", state.teamId, "sessions", state.sessionId),
+            {
+              developmentArea: direction,
+              estimatedTeamId: teamSnapshot.id,
+              estimatedTeamName: teamSnapshot.name,
+              developmentAreaCapturedAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            }
+          );
+        }
+
+        pendingCreatedIssueId = firstIssueId;
+        await batch.commit();
+
+        closeGitLabDiscoveryDialog();
+        toast(
+          `Добавлено задач из GitLab: ${fresh.length}.`,
+          "success",
+          3500
+        );
+      } catch (error) {
+        handleError(error, $("gitlabDiscoveryMessage"));
+      }
+    }
+  );
 }
 
 async function createIssue() {
