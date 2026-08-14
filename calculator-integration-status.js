@@ -225,6 +225,126 @@ function canManualRetry() {
   );
 }
 
+function currentTaskLocationFromHash() {
+  try {
+    const rawHash =
+      window.location.hash.replace(/^#/, "");
+
+    if (!rawHash) {
+      return null;
+    }
+
+    const params = new URLSearchParams(rawHash);
+    const teamId = String(
+      params.get("team") || ""
+    ).trim();
+    const sessionId = String(
+      params.get("session") || ""
+    ).trim();
+    const issueId = String(
+      params.get("issue") || ""
+    ).trim();
+
+    if (!issueId) {
+      return null;
+    }
+
+    return {
+      teamId,
+      sessionId,
+      issueId
+    };
+  } catch {
+    return null;
+  }
+}
+
+function mirroredDeliveryStatus(
+  issueId,
+  expectedRole = "",
+  expectedTeamId = ""
+) {
+  const normalizedIssueId = String(
+    issueId || ""
+  ).trim();
+
+  if (!normalizedIssueId) {
+    return null;
+  }
+
+  const item =
+    deliveryStatusSnapshotByIssueId.get(
+      normalizedIssueId
+    );
+
+  if (!item || item.found !== true) {
+    return null;
+  }
+
+  const mirroredRole = String(
+    item.estimatedRole || ""
+  ).trim();
+
+  const normalizedRole = String(
+    expectedRole || ""
+  ).trim();
+
+  if (
+    normalizedRole
+    && mirroredRole
+    && mirroredRole !== normalizedRole
+  ) {
+    return null;
+  }
+
+  const mirroredTeamId = String(
+    item.teamId || ""
+  ).trim();
+
+  const normalizedTeamId = String(
+    expectedTeamId || ""
+  ).trim();
+
+  if (
+    normalizedTeamId
+    && mirroredTeamId
+    && mirroredTeamId !== normalizedTeamId
+  ) {
+    return null;
+  }
+
+  return item;
+}
+
+function renderMirroredTeamCalculatorStatus(
+  item,
+  payload = null
+) {
+  if (!item) {
+    return false;
+  }
+
+  const deliveryLabel = String(
+    item?.delivery?.label || ""
+  ).trim();
+
+  const suffix = deliveryLabel
+    ? ` · ${deliveryLabel}`
+    : "";
+
+  setStatus(
+    payload?.reestimate?.required === true
+      ? "Задача ранее была передана в Team_calculator и сейчас требует переоценки."
+      : `Задача уже есть в Team_calculator${suffix}.`,
+    "ok",
+    payload && canManualRetry()
+      ? retryCurrentPayload
+      : null
+  );
+
+  return true;
+}
+
 function currentPayload() {
   const api = window.TeamPokerIntegration;
 
@@ -652,6 +772,24 @@ function renderCurrentState() {
   const payload = currentPayload();
 
   if (!payload) {
+    const location = currentTaskLocationFromHash();
+
+    const mirrored = location
+      ? mirroredDeliveryStatus(
+          location.issueId,
+          "",
+          location.teamId
+        )
+      : null;
+
+    if (
+      renderMirroredTeamCalculatorStatus(
+        mirrored
+      )
+    ) {
+      return;
+    }
+
     setStatus(
       "После фиксации оценка будет автоматически поставлена в очередь Team_calculator."
     );
@@ -734,6 +872,28 @@ function renderCurrentState() {
         ? retryCurrentPayload
         : null
     );
+    return;
+  }
+
+  /*
+    localStorage может быть пустым после очистки браузера,
+    входа с другого компьютера или для старой передачи.
+    Firestore delivery_status — серверный источник истины:
+    если там есть found=true для этой задачи/роли, задача
+    уже существует в Team_calculator.
+  */
+  const mirrored = mirroredDeliveryStatus(
+    payload.taskId,
+    payload.estimatedRole,
+    payload?.team?.id || ""
+  );
+
+  if (
+    renderMirroredTeamCalculatorStatus(
+      mirrored,
+      payload
+    )
+  ) {
     return;
   }
 
@@ -1284,6 +1444,14 @@ function syncDeliveryStatuses() {
         }
 
         renderDeliveryStatusSnapshot();
+
+        /*
+          Обновляем и основной статус в открытой карточке.
+          Раньше realtime delivery_status обновлял только
+          статусы списка задач, а карточка продолжала
+          опираться на localStorage.
+        */
+        renderCurrentState();
       },
       error => {
         console.error(
@@ -1363,6 +1531,7 @@ async function start() {
       "team-poker:issues-changed",
       () => {
         renderDeliveryStatusSnapshot();
+        renderCurrentState();
         scheduleDeliveryStatusRefresh(200);
       }
     );
