@@ -122,6 +122,10 @@ const issueGitLabStatusFilters = {
 
 let deliveryStatusRefreshInProgress = false;
 let deliveryStatusRefreshUnsubscribe = null;
+let deliveryStatusRefreshStage = "idle";
+let deliveryStatusRefreshStartedAt = 0;
+let deliveryStatusRefreshProgressTimer = null;
+let deliveryStatusRefreshSpinnerIndex = 0;
 
 /*
   GitLab discovery работает через metadata_connector.py:
@@ -481,10 +485,33 @@ function unsubscribe(fn) {
   if (typeof fn === "function") fn();
 }
 
+function stopDeliveryStatusRefreshProgressTimer() {
+  if (deliveryStatusRefreshProgressTimer) {
+    clearInterval(deliveryStatusRefreshProgressTimer);
+    deliveryStatusRefreshProgressTimer = null;
+  }
+}
+
+function startDeliveryStatusRefreshProgressTimer() {
+  stopDeliveryStatusRefreshProgressTimer();
+
+  deliveryStatusRefreshProgressTimer = setInterval(
+    () => {
+      deliveryStatusRefreshSpinnerIndex += 1;
+      renderTaskStatusesRefreshButton();
+    },
+    250
+  );
+}
+
 function clearDeliveryStatusRefreshListener() {
   unsubscribe(deliveryStatusRefreshUnsubscribe);
   deliveryStatusRefreshUnsubscribe = null;
   deliveryStatusRefreshInProgress = false;
+  deliveryStatusRefreshStage = "idle";
+  deliveryStatusRefreshStartedAt = 0;
+  deliveryStatusRefreshSpinnerIndex = 0;
+  stopDeliveryStatusRefreshProgressTimer();
 }
 
 function resetIssueGitLabStatusFilters() {
@@ -3076,10 +3103,63 @@ function renderTaskStatusesRefreshButton() {
     !available
     || deliveryStatusRefreshInProgress;
 
+  if (!deliveryStatusRefreshInProgress) {
+    button.textContent = "Обновить статусы";
+    button.removeAttribute("aria-busy");
+    button.title =
+      "Обновить статусы из уже сохранённых данных Team_calculator без повторного опроса GitLab";
+    return;
+  }
+
+  const spinnerFrames = [
+    "⠋", "⠙", "⠹", "⠸",
+    "⠼", "⠴", "⠦", "⠧",
+    "⠇", "⠏"
+  ];
+
+  const spinner =
+    spinnerFrames[
+      deliveryStatusRefreshSpinnerIndex
+      % spinnerFrames.length
+    ];
+
+  const elapsedSeconds =
+    deliveryStatusRefreshStartedAt
+      ? Math.max(
+          0,
+          Math.floor(
+            (
+              Date.now()
+              - deliveryStatusRefreshStartedAt
+            ) / 1000
+          )
+        )
+      : 0;
+
+  const elapsedText =
+    elapsedSeconds > 0
+      ? ` · ${elapsedSeconds}с`
+      : "";
+
+  let stageText = "Создание запроса";
+
+  if (deliveryStatusRefreshStage === "pending") {
+    stageText = "Ожидает connector";
+  } else if (
+    deliveryStatusRefreshStage === "processing"
+  ) {
+    stageText = "Обновление статусов";
+  }
+
   button.textContent =
-    deliveryStatusRefreshInProgress
-      ? "Обновление статусов…"
-      : "Обновить статусы";
+    `${spinner} ${stageText}${elapsedText}`;
+
+  button.setAttribute("aria-busy", "true");
+
+  button.title =
+    deliveryStatusRefreshStage === "processing"
+      ? "Connector обновляет статусы задач из Team_calculator"
+      : "Запрос поставлен в очередь и ожидает обработки connector";
 }
 
 async function requestTaskStatusesRefresh() {
@@ -3095,6 +3175,10 @@ async function requestTaskStatusesRefresh() {
   clearDeliveryStatusRefreshListener();
 
   deliveryStatusRefreshInProgress = true;
+  deliveryStatusRefreshStage = "creating";
+  deliveryStatusRefreshStartedAt = Date.now();
+  deliveryStatusRefreshSpinnerIndex = 0;
+  startDeliveryStatusRefreshProgressTimer();
   renderTaskStatusesRefreshButton();
 
   const now = new Date().toISOString();
@@ -3143,12 +3227,25 @@ async function requestTaskStatusesRefresh() {
             data.status || ""
           ).trim();
 
-          if (
-            status === "pending"
-            ||status === "processing"
-          ) {
+          if (status === "pending") {
+            deliveryStatusRefreshStage = "pending";
+            renderTaskStatusesRefreshButton();
             return;
           }
+
+          if (status === "processing") {
+            deliveryStatusRefreshStage = "processing";
+            renderTaskStatusesRefreshButton();
+            return;
+          }
+
+          const scannedCount = Number(
+            data.scannedCount || 0
+          );
+
+          const matchedTaskCount = Number(
+            data.matchedTaskCount || 0
+          );
 
           const mirroredCount = Number(
             data.mirroredCount || 0
@@ -3159,9 +3256,13 @@ async function requestTaskStatusesRefresh() {
 
           if (status === "succeeded") {
             toast(
-              `Статусы обновлены: ${mirroredCount}.`,
+              (
+                `Статусы обновлены: ${mirroredCount}. `
+                + `Найдено задач Team_poker в Team_calculator: ${matchedTaskCount}; `
+                + `проверено записей: ${scannedCount}.`
+              ),
               "success",
-              3500
+              5000
             );
             return;
           }
