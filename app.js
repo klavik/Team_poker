@@ -120,6 +120,19 @@ const issueGitLabStatusFilters = {
   estimated: "all"
 };
 
+/*
+  В списке «Активные» показываем только собственную оценку текущего
+  пользователя. Значения не копируются в issue-документ и не раскрывают
+  чужие голоса: приложение читает те же votes с where(userId == currentUser.uid),
+  которые уже используются в карточке выбранной задачи.
+
+  Кэш живёт только в памяти вкладки и сбрасывается при смене
+  пользователя / команды / сессии.
+*/
+const myCurrentVoteByIssueId = new Map();
+const myCurrentVoteLookupState = new Map();
+let myCurrentVoteContextKey = "";
+
 let deliveryStatusRefreshInProgress = false;
 let deliveryStatusRefreshUnsubscribe = null;
 let deliveryStatusRefreshStage = "idle";
@@ -3315,6 +3328,14 @@ function startIssuesListener() {
         renderIssuesFallback(renderError);
       }
 
+      loadMyCurrentVotesForActiveIssues()
+        .catch(error=>{
+          console.warn(
+            "Не удалось обновить собственные оценки в списке задач",
+            error
+          );
+        });
+
       notifyCalculatorIssuesChanged();
 
       if (
@@ -3838,6 +3859,238 @@ async function requestTaskStatusesRefresh() {
   }
 }
 
+function currentVoteListContextKey() {
+  return [
+    String(currentUser?.uid || ""),
+    String(state.teamId || ""),
+    String(state.sessionId || "")
+  ].join(":");
+}
+
+function ensureCurrentVoteListContext() {
+  const key = currentVoteListContextKey();
+
+  if (key === myCurrentVoteContextKey) {
+    return key;
+  }
+
+  myCurrentVoteContextKey = key;
+  myCurrentVoteByIssueId.clear();
+  myCurrentVoteLookupState.clear();
+
+  return key;
+}
+
+function currentVoteLookupKey(issue) {
+  return [
+    String(issue?.id || ""),
+    Number(issue?.currentRound || 0)
+  ].join(":");
+}
+
+function cacheMyCurrentVote(issue, vote) {
+  if (!issue?.id) return;
+
+  ensureCurrentVoteListContext();
+
+  const round = Number(issue.currentRound || 0);
+  const voteRound = Number(vote?.round || 0);
+  const value = Number(vote?.value);
+
+  if (
+    vote
+    && round > 0
+    && voteRound === round
+    && Number.isFinite(value)
+  ) {
+    myCurrentVoteByIssueId.set(
+      issue.id,
+      {
+        round,
+        value
+      }
+    );
+  } else {
+    myCurrentVoteByIssueId.delete(
+      issue.id
+    );
+  }
+
+  myCurrentVoteLookupState.set(
+    currentVoteLookupKey(issue),
+    "loaded"
+  );
+}
+
+function myCurrentVoteForIssue(issue) {
+  if (!issue?.id) return null;
+
+  ensureCurrentVoteListContext();
+
+  const cached =
+    myCurrentVoteByIssueId.get(
+      issue.id
+    );
+
+  if (
+    !cached
+    || Number(cached.round)
+      !== Number(issue.currentRound || 0)
+  ) {
+    return null;
+  }
+
+  return cached;
+}
+
+function myCurrentVoteBadgeHtml(issue) {
+  if (
+    !issue
+    || issue.status === "estimated"
+  ) {
+    return "";
+  }
+
+  const vote = myCurrentVoteForIssue(
+    issue
+  );
+
+  if (!vote) return "";
+
+  return `
+    <span
+      class="my-current-vote-badge"
+      title="${escapeHtml(
+        `Ваша оценка в текущем раунде ${vote.round}`
+      )}"
+    >
+      Моя оценка:
+      <strong>${escapeHtml(vote.value)}</strong>
+      ч.д.
+    </span>
+  `;
+}
+
+function issueCanHaveCurrentVote(issue) {
+  return Boolean(
+    issue
+    && issue.status !== "estimated"
+    && ["voting", "revealed"].includes(
+      String(issue.status || "")
+    )
+    && Number(issue.currentRound || 0) > 0
+  );
+}
+
+async function loadMyCurrentVotesForActiveIssues() {
+  if (
+    !db
+    || !currentUser?.uid
+    || !state.teamId
+    || !state.sessionId
+  ) {
+    return;
+  }
+
+  const contextKey =
+    ensureCurrentVoteListContext();
+
+  const candidates = state.issues.filter(
+    issue =>
+      issueCanHaveCurrentVote(issue)
+      && issue.id !== state.issueId
+      && !["loading", "loaded"].includes(
+        myCurrentVoteLookupState.get(
+          currentVoteLookupKey(issue)
+        )
+      )
+  );
+
+  if (!candidates.length) return;
+
+  candidates.forEach(issue => {
+    myCurrentVoteLookupState.set(
+      currentVoteLookupKey(issue),
+      "loading"
+    );
+  });
+
+  await Promise.allSettled(
+    candidates.map(async issue => {
+      const lookupKey =
+        currentVoteLookupKey(issue);
+
+      try {
+        const ownVotesQuery = query(
+          collection(
+            db,
+            "teams", state.teamId,
+            "sessions", state.sessionId,
+            "issues", issue.id,
+            "votes"
+          ),
+          where(
+            "userId",
+            "==",
+            currentUser.uid
+          )
+        );
+
+        const snapshot =
+          await getDocs(ownVotesQuery);
+
+        if (
+          contextKey
+          !== currentVoteListContextKey()
+        ) {
+          return;
+        }
+
+        const round =
+          Number(issue.currentRound || 0);
+
+        const voteDoc =
+          snapshot.docs.find(
+            item =>
+              Number(item.data().round)
+              === round
+          );
+
+        cacheMyCurrentVote(
+          issue,
+          voteDoc
+            ? {
+                id: voteDoc.id,
+                ...voteDoc.data()
+              }
+            : null
+        );
+      } catch (error) {
+        if (
+          contextKey
+          === currentVoteListContextKey()
+        ) {
+          myCurrentVoteLookupState.delete(
+            lookupKey
+          );
+        }
+
+        console.warn(
+          `Не удалось загрузить собственную оценку для задачи ${issue.id}`,
+          error
+        );
+      }
+    })
+  );
+
+  if (
+    contextKey
+    === currentVoteListContextKey()
+  ) {
+    renderIssues();
+  }
+}
+
 function issueStatusText(status) {
   return ({
     pending: "Не начата",
@@ -4211,6 +4464,7 @@ function issueListItemHtml(issue) {
       : "";
 
   const calculatorStatusBadges = [
+    myCurrentVoteBadgeHtml(issue),
     calculatorDeliveryBadgeHtml(issue, { compact: true }),
     calculatorGitLabBadgeHtml(issue, { compact: true })
   ].filter(Boolean).join("");
@@ -5455,6 +5709,12 @@ function startVoteListeners() {
         ? { id: voteDoc.id, ...voteDoc.data() }
         : null;
 
+      cacheMyCurrentVote(
+        state.issue,
+        state.myVote
+      );
+
+      renderIssues();
       renderIssue();
     },
     error => handleVoteSubscriptionError(

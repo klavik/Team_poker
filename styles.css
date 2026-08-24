@@ -1449,6 +1449,28 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   flex-wrap: wrap;
 }
 
+.my-current-vote-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid #9fc0f5;
+  border-radius: 999px;
+  background: #eef5ff;
+  color: #174ea6;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.my-current-vote-badge strong {
+  font-size: 11px;
+  font-weight: 950;
+}
+
 .calculator-delivery-badge,
 .calculator-gitlab-badge {
   display: inline-flex;
@@ -1895,5 +1917,56 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
 
   #bulkVotingControls #startSelectedVotingBtn {
     grid-column: auto;
+  }
+}
+
+/* === v1.3.7 — responsive task card position ===
+   На широком экране карточка задачи остаётся после рабочих блоков,
+   чтобы большое описание не сдвигало голосование вниз.
+   На небольшом экране карточка поднимается наверх, но описание
+   ограничивается по высоте и прокручивается внутри карточки.
+*/
+#issueCard:not(.hidden) {
+  display: flex;
+  flex-direction: column;
+}
+
+#issueCard > .content-grid {
+  order: 1;
+}
+
+#issueCard > .issue-detail-panel {
+  order: 2;
+}
+
+@media (max-width: 1050px) {
+  #issueCard > .issue-detail-panel {
+    order: 0;
+  }
+
+  #issueCard > .content-grid {
+    order: 1;
+  }
+
+  .issue-detail-panel .issue-description {
+    max-height: min(28vh, 220px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding-right: 6px;
+  }
+}
+
+@media (max-width: 700px) {
+  .issue-detail-panel .issue-header {
+    gap: 8px;
+  }
+
+  .issue-detail-panel .issue-title {
+    font-size: 18px;
+  }
+
+  .issue-detail-panel .issue-description {
+    max-height: min(24vh, 170px);
   }
 }
