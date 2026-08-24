@@ -172,6 +172,175 @@ function configuredStatusCollection() {
   return value || "delivery_status";
 }
 
+function configuredTeamCalculatorBaseUrl() {
+  const configured = String(
+    integrationConfig.teamCalculatorBaseUrl
+    || "../team_calculator/"
+  ).trim();
+
+  if (!configured) {
+    return null;
+  }
+
+  try {
+    const url = new URL(
+      configured,
+      window.location.href
+    );
+
+    url.hash = "";
+    url.search = "";
+
+    if (!url.pathname.endsWith("/")) {
+      url.pathname += "/";
+    }
+
+    return url;
+  } catch (error) {
+    console.warn(
+      "Некорректный teamCalculatorBaseUrl:",
+      configured,
+      error
+    );
+    return null;
+  }
+}
+
+function teamCalculatorTaskUrl(targetTaskId) {
+  const taskId = String(
+    targetTaskId || ""
+  ).trim();
+
+  const baseUrl =
+    configuredTeamCalculatorBaseUrl();
+
+  if (!taskId || !baseUrl) {
+    return null;
+  }
+
+  const url = new URL(baseUrl.href);
+  url.searchParams.set("task", taskId);
+
+  return url.href;
+}
+
+function ensureTeamCalculatorTaskLink() {
+  const issueLinks =
+    document.querySelector(".issue-links");
+
+  if (!issueLinks) {
+    return null;
+  }
+
+  let link =
+    document.getElementById(
+      "teamCalculatorTaskLink"
+    );
+
+  if (link) {
+    return link;
+  }
+
+  link = document.createElement("a");
+  link.id = "teamCalculatorTaskLink";
+  link.className = "hidden";
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = "Открыть в Team_calculator";
+
+  const copyLinkButton =
+    document.getElementById(
+      "copyIssueLinkBtn"
+    );
+
+  issueLinks.insertBefore(
+    link,
+    copyLinkButton || null
+  );
+
+  return link;
+}
+
+function mirroredTeamCalculatorTask(
+  issueId,
+  expectedTeamId = ""
+) {
+  const normalizedIssueId = String(
+    issueId || ""
+  ).trim();
+
+  if (!normalizedIssueId) {
+    return null;
+  }
+
+  const item =
+    deliveryStatusSnapshotByIssueId.get(
+      normalizedIssueId
+    );
+
+  if (
+    !item
+    || item.found !== true
+    || !String(
+      item.targetTaskId || ""
+    ).trim()
+  ) {
+    return null;
+  }
+
+  const mirroredTeamId = String(
+    item.teamId || ""
+  ).trim();
+
+  const normalizedTeamId = String(
+    expectedTeamId || ""
+  ).trim();
+
+  if (
+    normalizedTeamId
+    && mirroredTeamId
+    && mirroredTeamId !== normalizedTeamId
+  ) {
+    return null;
+  }
+
+  return item;
+}
+
+function renderTeamCalculatorTaskLink(
+  item = null
+) {
+  const link =
+    ensureTeamCalculatorTaskLink();
+
+  if (!link) {
+    return;
+  }
+
+  const targetTaskId = String(
+    item?.targetTaskId || ""
+  ).trim();
+
+  const href =
+    item?.found === true
+      ? teamCalculatorTaskUrl(
+          targetTaskId
+        )
+      : null;
+
+  if (!href) {
+    link.classList.add("hidden");
+    link.removeAttribute("href");
+    link.removeAttribute("title");
+    return;
+  }
+
+  link.href = href;
+  link.title =
+    "Открыть эту задачу в Team_calculator";
+  link.classList.remove("hidden");
+}
+
 function stopDeliveryStatusSubscription() {
   if (deliveryStatusUnsubscribe) {
     try {
@@ -762,6 +931,20 @@ async function ensureCurrentSyncJobWatch(
 }
 
 function renderCurrentState() {
+  const location =
+    currentTaskLocationFromHash();
+
+  const mirroredTask = location
+    ? mirroredTeamCalculatorTask(
+        location.issueId,
+        location.teamId
+      )
+    : null;
+
+  renderTeamCalculatorTaskLink(
+    mirroredTask
+  );
+
   if (!currentUser) {
     setStatus(
       "Войдите, чтобы передавать оценки в Team_calculator."
@@ -772,8 +955,6 @@ function renderCurrentState() {
   const payload = currentPayload();
 
   if (!payload) {
-    const location = currentTaskLocationFromHash();
-
     const mirrored = location
       ? mirroredDeliveryStatus(
           location.issueId,
