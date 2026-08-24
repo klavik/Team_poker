@@ -1920,44 +1920,58 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   }
 }
 
-/* === v1.3.7 — responsive task card position ===
-   На широком экране карточка задачи остаётся после рабочих блоков,
-   чтобы большое описание не сдвигало голосование вниз.
-   На небольшом экране карточка поднимается наверх, но описание
-   ограничивается по высоте и прокручивается внутри карточки.
+/* === v1.3.9 — fixed-height task card ===
+   Карточка задачи всегда находится над голосованием.
+   Заголовок, ссылки и служебная информация остаются видимыми,
+   а длинное Markdown-описание прокручивается внутри карточки.
 */
 #issueCard:not(.hidden) {
+  display: block;
+}
+
+.issue-detail-panel {
   display: flex;
   flex-direction: column;
+  height: 340px;
+  min-height: 340px;
+  max-height: 340px;
+  overflow: hidden;
 }
 
-#issueCard > .content-grid {
-  order: 1;
+.issue-detail-panel .issue-header {
+  flex: 0 0 auto;
 }
 
-#issueCard > .issue-detail-panel {
-  order: 2;
+.issue-detail-panel .issue-description {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 12px;
+  padding-right: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
-@media (max-width: 1050px) {
-  #issueCard > .issue-detail-panel {
-    order: 0;
+.issue-detail-panel .issue-author-meta {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 1200px) {
+  .issue-detail-panel {
+    height: 300px;
+    min-height: 300px;
+    max-height: 300px;
+  }
+}
+
+@media (max-width: 900px) {
+  .issue-detail-panel {
+    height: 260px;
+    min-height: 260px;
+    max-height: 260px;
   }
 
-  #issueCard > .content-grid {
-    order: 1;
-  }
-
-  .issue-detail-panel .issue-description {
-    max-height: min(28vh, 220px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-gutter: stable;
-    padding-right: 6px;
-  }
-}
-
-@media (max-width: 700px) {
   .issue-detail-panel .issue-header {
     gap: 8px;
   }
@@ -1965,8 +1979,16 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .issue-detail-panel .issue-title {
     font-size: 18px;
   }
+}
+
+@media (max-width: 600px) {
+  .issue-detail-panel {
+    height: 225px;
+    min-height: 225px;
+    max-height: 225px;
+  }
 
   .issue-detail-panel .issue-description {
-    max-height: min(24vh, 170px);
+    padding-right: 5px;
   }
 }
