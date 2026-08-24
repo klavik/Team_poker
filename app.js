@@ -150,6 +150,539 @@ function escapeHtml(value) {
   })[char]);
 }
 
+/*
+  Безопасный Markdown renderer для описаний GitLab.
+
+  Почему не innerHTML из GitLab напрямую:
+  description приходит как пользовательский Markdown и не должен
+  превращаться в произвольный HTML/JavaScript в Team_poker.
+
+  Поддерживается наиболее полезный GitLab/GFM subset:
+  - заголовки;
+  - обычные и нумерованные списки;
+  - task list [ ] / [x];
+  - жирный / курсив / зачёркивание;
+  - inline code и fenced code blocks;
+  - blockquote;
+  - ссылки и изображения;
+  - таблицы;
+  - горизонтальная линия;
+  - переносы строк внутри абзаца.
+
+  Все исходные HTML-теги экранируются.
+*/
+
+function markdownResolveUrl(value, baseUrl = "") {
+  const source = String(value || "").trim();
+
+  if (!source) return null;
+
+  if (/^(?:javascript|data|vbscript):/i.test(source)) {
+    return null;
+  }
+
+  try {
+    const resolved = new URL(
+      source,
+      baseUrl || window.location.href
+    );
+
+    if (!["http:", "https:", "mailto:"].includes(resolved.protocol)) {
+      return null;
+    }
+
+    return resolved.href;
+  } catch {
+    return null;
+  }
+}
+
+function markdownProjectBaseUrl(issueUrl = "") {
+  const source = String(issueUrl || "").trim();
+
+  if (!source) return window.location.href;
+
+  try {
+    const url = new URL(source, window.location.href);
+    const marker = "/-/issues/";
+    const index = url.pathname.indexOf(marker);
+
+    if (index >= 0) {
+      url.pathname = url.pathname.slice(0, index + 1);
+      url.search = "";
+      url.hash = "";
+      return url.href;
+    }
+
+    return url.href;
+  } catch {
+    return window.location.href;
+  }
+}
+
+function renderMarkdownInline(source, baseUrl = "") {
+  const placeholders = [];
+  const stash = html => {
+    const token = `\u0000MD${placeholders.length}\u0000`;
+    placeholders.push(html);
+    return token;
+  };
+
+  let text = String(source ?? "");
+
+  // Backslash escapes for common Markdown punctuation.
+  text = text.replace(
+    /\\([\\`*_[\]{}()#+\-.!~>|])/g,
+    (_match, char) => stash(escapeHtml(char))
+  );
+
+  // Inline code first: markup inside code must not be interpreted.
+  text = text.replace(
+    /(`+)([\s\S]*?)\1/g,
+    (_match, _ticks, code) =>
+      stash(`<code>${escapeHtml(
+        String(code).replace(/^\s|\s$/g, "")
+      )}</code>`)
+  );
+
+  // Images.
+  text = text.replace(
+    /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)/g,
+    (_match, alt, rawUrl, title) => {
+      const href = markdownResolveUrl(rawUrl, baseUrl);
+
+      if (!href) {
+        return escapeHtml(alt || "");
+      }
+
+      const titleAttr = title
+        ? ` title="${escapeHtml(title)}"`
+        : "";
+
+      return stash(
+        `<img src="${escapeHtml(href)}" alt="${escapeHtml(
+          alt || ""
+        )}"${titleAttr} loading="lazy">`
+      );
+    }
+  );
+
+  // Links.
+  text = text.replace(
+    /\[([^\]]+)\]\(([^)\s]+)(?:\s+["']([^"']*)["'])?\)/g,
+    (_match, label, rawUrl, title) => {
+      const href = markdownResolveUrl(rawUrl, baseUrl);
+
+      if (!href) {
+        return escapeHtml(label);
+      }
+
+      const titleAttr = title
+        ? ` title="${escapeHtml(title)}"`
+        : "";
+
+      return stash(
+        `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${escapeHtml(
+          label
+        )}</a>`
+      );
+    }
+  );
+
+  // GitLab-style autolinks in angle brackets.
+  text = text.replace(
+    /<((?:https?:\/\/|mailto:)[^>\s]+)>/gi,
+    (_match, rawUrl) => {
+      const href = markdownResolveUrl(rawUrl, baseUrl);
+
+      if (!href) return escapeHtml(rawUrl);
+
+      const label = rawUrl.replace(/^mailto:/i, "");
+
+      return stash(
+        `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+          label
+        )}</a>`
+      );
+    }
+  );
+
+  // Everything that remains is plain user text.
+  text = escapeHtml(text);
+
+  // Bare http(s) URLs.
+  text = text.replace(
+    /(^|[\s(])((?:https?:\/\/)[^\s<>"')\]]+)/g,
+    (_match, prefix, rawUrl) => {
+      const href = markdownResolveUrl(rawUrl, baseUrl);
+
+      if (!href) {
+        return `${prefix}${rawUrl}`;
+      }
+
+      return `${prefix}${stash(
+        `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+          rawUrl
+        )}</a>`
+      )}`;
+    }
+  );
+
+  // Strong / strike / emphasis.
+  text = text
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+    .replace(
+      /(^|[^\w])\*([^*\n]+)\*(?!\*)/g,
+      "$1<em>$2</em>"
+    )
+    .replace(
+      /(^|[^\w])_([^_\n]+)_(?!_)/g,
+      "$1<em>$2</em>"
+    );
+
+  // Restore safe generated fragments. Repeat because a restored fragment
+  // can contain no further tokens except those created during this call.
+  text = text.replace(
+    /\u0000MD(\d+)\u0000/g,
+    (_match, index) => placeholders[Number(index)] || ""
+  );
+
+  return text;
+}
+
+function splitMarkdownTableRow(line) {
+  let source = String(line || "").trim();
+
+  if (source.startsWith("|")) source = source.slice(1);
+  if (source.endsWith("|")) source = source.slice(0, -1);
+
+  const cells = [];
+  let current = "";
+  let escaped = false;
+
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function isMarkdownTableSeparator(line) {
+  const cells = splitMarkdownTableRow(line);
+
+  return (
+    cells.length > 0
+    && cells.every(cell =>
+      /^:?-{3,}:?$/.test(cell.replace(/\s+/g, ""))
+    )
+  );
+}
+
+function renderMarkdownTable(lines, startIndex, baseUrl) {
+  const header = splitMarkdownTableRow(lines[startIndex]);
+  const separator = splitMarkdownTableRow(lines[startIndex + 1]);
+  const alignments = separator.map(cell => {
+    const compact = cell.replace(/\s+/g, "");
+    const left = compact.startsWith(":");
+    const right = compact.endsWith(":");
+
+    if (left && right) return "center";
+    if (right) return "right";
+    if (left) return "left";
+    return "";
+  });
+
+  const bodyRows = [];
+  let index = startIndex + 2;
+
+  while (
+    index < lines.length
+    && lines[index].trim()
+    && lines[index].includes("|")
+  ) {
+    bodyRows.push(splitMarkdownTableRow(lines[index]));
+    index += 1;
+  }
+
+  const headerHtml = header.map((cell, cellIndex) => {
+    const align = alignments[cellIndex];
+    const attr = align ? ` style="text-align:${align}"` : "";
+
+    return `<th${attr}>${renderMarkdownInline(
+      cell,
+      baseUrl
+    )}</th>`;
+  }).join("");
+
+  const bodyHtml = bodyRows.map(row => {
+    const cells = header.map((_header, cellIndex) => {
+      const align = alignments[cellIndex];
+      const attr = align ? ` style="text-align:${align}"` : "";
+
+      return `<td${attr}>${renderMarkdownInline(
+        row[cellIndex] || "",
+        baseUrl
+      )}</td>`;
+    }).join("");
+
+    return `<tr>${cells}</tr>`;
+  }).join("");
+
+  return {
+    html: `<div class="markdown-table-wrap"><table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`,
+    nextIndex: index
+  };
+}
+
+function renderMarkdown(markdown, issueUrl = "") {
+  const source = String(markdown || "");
+
+  if (!source.trim()) return "";
+
+  const baseUrl = markdownProjectBaseUrl(issueUrl);
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const output = [];
+  let index = 0;
+  let paragraph = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+
+    output.push(
+      `<p>${paragraph.map(line =>
+        renderMarkdownInline(line, baseUrl)
+      ).join("<br>")}</p>`
+    );
+
+    paragraph = [];
+  };
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    // Fenced code block.
+    const fenceMatch = line.match(/^\s*(```+|~~~+)\s*([^`]*)$/);
+
+    if (fenceMatch) {
+      flushParagraph();
+
+      const fence = fenceMatch[1];
+      const language = String(fenceMatch[2] || "")
+        .trim()
+        .split(/\s+/)[0]
+        .replace(/[^a-z0-9_+-]/gi, "");
+
+      const codeLines = [];
+      index += 1;
+
+      while (
+        index < lines.length
+        && !new RegExp(
+          `^\\s*${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`
+        ).test(lines[index])
+      ) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      if (index < lines.length) index += 1;
+
+      const classAttr = language
+        ? ` class="language-${escapeHtml(language)}"`
+        : "";
+
+      output.push(
+        `<pre><code${classAttr}>${escapeHtml(
+          codeLines.join("\n")
+        )}</code></pre>`
+      );
+      continue;
+    }
+
+    if (!trimmed) {
+      flushParagraph();
+      index += 1;
+      continue;
+    }
+
+    // GFM table.
+    if (
+      index + 1 < lines.length
+      && line.includes("|")
+      && isMarkdownTableSeparator(lines[index + 1])
+    ) {
+      flushParagraph();
+      const table = renderMarkdownTable(
+        lines,
+        index,
+        baseUrl
+      );
+      output.push(table.html);
+      index = table.nextIndex;
+      continue;
+    }
+
+    // ATX headings.
+    const headingMatch = line.match(
+      /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/
+    );
+
+    if (headingMatch) {
+      flushParagraph();
+      const level = headingMatch[1].length;
+
+      output.push(
+        `<h${level}>${renderMarkdownInline(
+          headingMatch[2],
+          baseUrl
+        )}</h${level}>`
+      );
+
+      index += 1;
+      continue;
+    }
+
+    // Horizontal rule.
+    if (
+      /^\s{0,3}(?:\*\s*){3,}$/.test(line)
+      || /^\s{0,3}(?:-\s*){3,}$/.test(line)
+      || /^\s{0,3}(?:_\s*){3,}$/.test(line)
+    ) {
+      flushParagraph();
+      output.push("<hr>");
+      index += 1;
+      continue;
+    }
+
+    // Blockquote (consecutive lines).
+    if (/^\s{0,3}>\s?/.test(line)) {
+      flushParagraph();
+      const quoteLines = [];
+
+      while (
+        index < lines.length
+        && /^\s{0,3}>\s?/.test(lines[index])
+      ) {
+        quoteLines.push(
+          lines[index].replace(/^\s{0,3}>\s?/, "")
+        );
+        index += 1;
+      }
+
+      output.push(
+        `<blockquote>${renderMarkdown(
+          quoteLines.join("\n"),
+          issueUrl
+        )}</blockquote>`
+      );
+      continue;
+    }
+
+    // Unordered list / task list.
+    if (/^\s{0,3}[-+*]\s+/.test(line)) {
+      flushParagraph();
+      const items = [];
+
+      while (
+        index < lines.length
+        && /^\s{0,3}[-+*]\s+/.test(lines[index])
+      ) {
+        const itemText = lines[index].replace(
+          /^\s{0,3}[-+*]\s+/,
+          ""
+        );
+
+        const taskMatch = itemText.match(
+          /^\[([ xX])\]\s+(.*)$/
+        );
+
+        if (taskMatch) {
+          const checked =
+            taskMatch[1].toLowerCase() === "x";
+
+          items.push(
+            `<li class="markdown-task-item"><input type="checkbox" disabled ${
+              checked ? "checked" : ""
+            }><span>${renderMarkdownInline(
+              taskMatch[2],
+              baseUrl
+            )}</span></li>`
+          );
+        } else {
+          items.push(
+            `<li>${renderMarkdownInline(
+              itemText,
+              baseUrl
+            )}</li>`
+          );
+        }
+
+        index += 1;
+      }
+
+      output.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Ordered list.
+    if (/^\s{0,3}\d+[.)]\s+/.test(line)) {
+      flushParagraph();
+      const items = [];
+
+      while (
+        index < lines.length
+        && /^\s{0,3}\d+[.)]\s+/.test(lines[index])
+      ) {
+        const itemText = lines[index].replace(
+          /^\s{0,3}\d+[.)]\s+/,
+          ""
+        );
+
+        items.push(
+          `<li>${renderMarkdownInline(
+            itemText,
+            baseUrl
+          )}</li>`
+        );
+
+        index += 1;
+      }
+
+      output.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+
+    paragraph.push(line);
+    index += 1;
+  }
+
+  flushParagraph();
+
+  return output.join("");
+}
+
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -5429,7 +5962,15 @@ function renderIssue() {
     show(transferNotice, false);
   }
 
-  $("issueDescription").textContent = issue.description || "";
+  const descriptionRoot = $("issueDescription");
+  descriptionRoot.innerHTML = renderMarkdown(
+    issue.description || "",
+    issue.gitlabUrl || ""
+  );
+  descriptionRoot.classList.toggle(
+    "empty",
+    !String(issue.description || "").trim()
+  );
   renderIssueAuthorMeta();
 
   show($("gitlabLink"), Boolean(issue.gitlabUrl));

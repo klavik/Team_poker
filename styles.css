@@ -514,7 +514,206 @@ textarea { min-height: 95px; resize: vertical; }
 }
 .issue-transfer-notice strong { font-size: 12px; }
 .issue-transfer-notice span { color: #4a6488; }
-.issue-description { margin-top: 12px; color: #344054; white-space: pre-wrap; }
+.issue-description {
+  margin-top: 12px;
+  color: #344054;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.issue-description.empty {
+  display: none;
+}
+
+/* v1.3.4 — безопасное отображение GitLab Markdown */
+.issue-description > :first-child {
+  margin-top: 0;
+}
+
+.issue-description > :last-child {
+  margin-bottom: 0;
+}
+
+.issue-description p {
+  margin: 0 0 10px;
+}
+
+.issue-description h1,
+.issue-description h2,
+.issue-description h3,
+.issue-description h4,
+.issue-description h5,
+.issue-description h6 {
+  margin: 18px 0 8px;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.issue-description h1 {
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
+  font-size: 22px;
+}
+
+.issue-description h2 {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 19px;
+}
+
+.issue-description h3 {
+  font-size: 16px;
+}
+
+.issue-description h4,
+.issue-description h5,
+.issue-description h6 {
+  font-size: 14px;
+}
+
+.issue-description ul,
+.issue-description ol {
+  margin: 8px 0 12px;
+  padding-left: 25px;
+}
+
+.issue-description li {
+  margin: 4px 0;
+}
+
+.issue-description .markdown-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-left: -21px;
+  list-style: none;
+}
+
+.issue-description .markdown-task-item input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 4px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.issue-description blockquote {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border-left: 4px solid #c7cedc;
+  border-radius: 0 8px 8px 0;
+  background: #f7f8fb;
+  color: #4d5768;
+}
+
+.issue-description blockquote > :first-child {
+  margin-top: 0;
+}
+
+.issue-description blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.issue-description code {
+  padding: 2px 5px;
+  border: 1px solid #e0e4ec;
+  border-radius: 6px;
+  background: #f3f5f8;
+  color: #25324a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .92em;
+}
+
+.issue-description pre {
+  max-width: 100%;
+  margin: 12px 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #172033;
+  color: #f5f7fb;
+  line-height: 1.45;
+}
+
+.issue-description pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.issue-description a {
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.issue-description a:hover {
+  color: var(--accent-hover);
+}
+
+.issue-description img {
+  display: block;
+  max-width: 100%;
+  max-height: 620px;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  object-fit: contain;
+}
+
+.issue-description hr {
+  height: 1px;
+  margin: 18px 0;
+  border: 0;
+  background: var(--border);
+}
+
+.issue-description .markdown-table-wrap {
+  max-width: 100%;
+  margin: 12px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.issue-description table {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  background: var(--surface);
+}
+
+.issue-description th,
+.issue-description td {
+  padding: 8px 10px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  font-size: 13px;
+}
+
+.issue-description th:last-child,
+.issue-description td:last-child {
+  border-right: 0;
+}
+
+.issue-description tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.issue-description th {
+  background: #f7f8fb;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.issue-description del {
+  color: var(--muted);
+}
 .status-pill {
   display: inline-block;
   padding: 4px 8px;
