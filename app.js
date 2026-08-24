@@ -115,6 +115,9 @@ let bulkMoveInProgress = false;
   GitLab-статус фильтруется независимо для активных и оценённых задач.
   "__missing__" означает отсутствие workflow statusLabel в Team_calculator.
 */
+const GITLAB_STATUS_FILTER_NOT_READY_PROD =
+  "__not_ready_to_prod__";
+
 const issueGitLabStatusFilters = {
   active: "all",
   estimated: "all"
@@ -4147,10 +4150,34 @@ function issueMatchesGitLabStatusFilter(
   issue,
   filterValue
 ) {
-  return (
+  if(
     !filterValue
     ||filterValue === "all"
-    ||issueGitLabWorkflowStatus(issue)
+  ){
+    return true;
+  }
+
+  if(
+    filterValue
+    ===GITLAB_STATUS_FILTER_NOT_READY_PROD
+  ){
+    const normalizedStatus=
+      issueGitLabWorkflowStatus(issue)
+        .trim()
+        .toLocaleLowerCase("ru");
+
+    /*
+      В GitLab статус содержит emoji после текста
+      "Ready to PROD". Поэтому сравниваем по началу строки,
+      а не по полному точному значению.
+    */
+    return !normalizedStatus.startsWith(
+      "ready to prod"
+    );
+  }
+
+  return (
+    issueGitLabWorkflowStatus(issue)
       ===filterValue
   );
 }
@@ -4586,6 +4613,8 @@ function renderIssueGroup(
 
   if (
     selected !== "all"
+    &&selected
+      !==GITLAB_STATUS_FILTER_NOT_READY_PROD
     &&!options.includes(selected)
   ) {
     selected = "all";
@@ -4595,6 +4624,17 @@ function renderIssueGroup(
 
   const filterOptions = [
     '<option value="all">Все статусы GitLab</option>',
+    `<option
+      value="${GITLAB_STATUS_FILTER_NOT_READY_PROD}"
+      ${
+        selected
+          ===GITLAB_STATUS_FILTER_NOT_READY_PROD
+            ?"selected"
+            :""
+      }
+    >
+      Все кроме Ready to PROD
+    </option>`,
     ...options.map(value=>`
       <option
         value="${escapeHtml(value)}"
