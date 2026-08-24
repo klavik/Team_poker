@@ -395,6 +395,42 @@ function canManualRetry() {
 }
 
 function currentTaskLocationFromHash() {
+  /*
+    При переключении карточек внутри Team_poker сначала используем
+    живое состояние приложения. URL остаётся fallback для прямого
+    открытия ссылки и ранней стадии загрузки.
+  */
+  try {
+    const api = window.TeamPokerIntegration;
+
+    if (
+      api
+      && typeof api.getCurrentTaskLocation === "function"
+    ) {
+      const live = api.getCurrentTaskLocation() || {};
+      const issueId = String(
+        live.issueId || ""
+      ).trim();
+
+      if (issueId) {
+        return {
+          teamId: String(
+            live.teamId || ""
+          ).trim(),
+          sessionId: String(
+            live.sessionId || ""
+          ).trim(),
+          issueId
+        };
+      }
+    }
+  } catch (error) {
+    console.warn(
+      "Не удалось получить текущую задачу Team_poker:",
+      error
+    );
+  }
+
   try {
     const rawHash =
       window.location.hash.replace(/^#/, "");
@@ -1705,6 +1741,18 @@ async function start() {
       () => {
         setTimeout(refreshIntegrationUi, 300);
         scheduleDeliveryStatusRefresh(350);
+      }
+    );
+
+    window.addEventListener(
+      "team-poker:task-changed",
+      () => {
+        /*
+          Обновляем href по открытой задаче сразу.
+          Firestore перечитывать для этого не нужно:
+          delivery_status уже закэширован по issueId.
+        */
+        renderCurrentState();
       }
     );
 
