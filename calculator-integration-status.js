@@ -175,7 +175,7 @@ function configuredStatusCollection() {
 function configuredTeamCalculatorBaseUrl() {
   const configured = String(
     integrationConfig.teamCalculatorBaseUrl
-    || "../team_calculator/"
+    || "../Team_calculator/"
   ).trim();
 
   if (!configured) {
