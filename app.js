@@ -1508,8 +1508,26 @@ function syncCurrentTaskLink() {
 
   const nextUrl = new URL(taskLink);
   if (window.location.hash !== nextUrl.hash) {
+    /*
+      replaceState меняет hash без события hashchange.
+      Поэтому интеграция Team_calculator должна получить
+      отдельное уведомление о смене открытой задачи.
+    */
     window.history.replaceState(null, "", nextUrl.hash);
   }
+
+  window.dispatchEvent(
+    new CustomEvent(
+      "team-poker:task-changed",
+      {
+        detail: {
+          teamId: state.teamId,
+          sessionId: state.sessionId,
+          issueId: state.issueId
+        }
+      }
+    )
+  );
 }
 
 function showTaskLinkError(message) {
@@ -8366,6 +8384,12 @@ async function copyTeamCalendarPayload() {
 
 // Точка расширения для будущего прямого вызова интеграции.
 window.TeamPokerIntegration = {
+  getCurrentTaskLocation: () => ({
+    teamId: state.teamId || "",
+    sessionId: state.sessionId || "",
+    issueId: state.issueId || ""
+  }),
+
   getCurrentEstimatePayload: () =>
     buildTeamCalendarEstimatePayload(),
 
