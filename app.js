@@ -1950,9 +1950,39 @@ function renderTeamControls() {
     !estimationManager || !state.sessionId;
 }
 
+function normalizeGitLabGroupPathInput(value) {
+  let raw = String(value || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      raw = decodeURIComponent(
+        url.pathname || ""
+      );
+    }
+  } catch {
+    // Если это не URL, ниже обработаем как обычный GitLab full path.
+  }
+
+  raw = raw
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\/-\/.*$/i, "")
+    .trim();
+
+  return raw;
+}
+
 async function createTeam() {
   const name = $("newTeamName").value.trim();
   const developmentArea = $("newTeamDevelopmentArea").value;
+  const gitlabGroupPath =
+    normalizeGitLabGroupPathInput(
+      $("newTeamGitLabGroupPath").value
+    );
   const target = $("teamDialogMessage");
 
   setFormMessage(target);
@@ -1975,6 +2005,7 @@ async function createTeam() {
         memberEmails: [email],
         leadEmails: [email],
         developmentArea,
+        gitlabGroupPath: gitlabGroupPath || null,
         developmentAreaUpdatedAt: serverTimestamp(),
         createdAt: serverTimestamp()
       });
@@ -1990,6 +2021,7 @@ async function createTeam() {
 
       $("newTeamName").value = "";
       $("newTeamDevelopmentArea").value = "";
+      $("newTeamGitLabGroupPath").value = "";
       closeDialog("teamDialog");
       localStorage.setItem("planningPoker.firebase.teamId", teamRef.id);
       toast(`Команда «${name}» создана.`, "success");
@@ -2010,6 +2042,8 @@ function openEditTeamDialog() {
     isValidDevelopmentArea(team.developmentArea)
       ? team.developmentArea
       : "";
+  $("editTeamGitLabGroupPath").value =
+    String(team.gitlabGroupPath || "");
   setFormMessage($("editTeamMessage"));
   openDialog("editTeamDialog");
 
@@ -2024,6 +2058,10 @@ async function saveTeamChanges() {
 
   const name = $("editTeamName").value.trim();
   const developmentArea = $("editTeamDevelopmentArea").value;
+  const gitlabGroupPath =
+    normalizeGitLabGroupPathInput(
+      $("editTeamGitLabGroupPath").value
+    );
   const target = $("editTeamMessage");
 
   setFormMessage(target);
@@ -2050,6 +2088,7 @@ async function saveTeamChanges() {
         {
           name,
           developmentArea,
+          gitlabGroupPath: gitlabGroupPath || null,
           developmentAreaUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }
