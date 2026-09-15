@@ -5560,6 +5560,16 @@ async function importSelectedGitLabCandidates() {
               }
             })
           );
+
+          addGitLabRequiredLabelJobToBatch(
+            batch,
+            {
+              issueId:issueRef.id,
+              issueTitle:title,
+              externalTaskUrl:gitlabUrl,
+              requestedBy:actor
+            }
+          );
         });
 
         if (!isValidDevelopmentArea(session?.developmentArea)) {
@@ -5580,9 +5590,9 @@ async function importSelectedGitLabCandidates() {
 
         closeGitLabDiscoveryDialog();
         toast(
-          `Добавлено задач из GitLab: ${fresh.length}.`,
+          `Добавлено задач из GitLab: ${fresh.length}. Label estimate::required поставлен в очередь.`,
           "success",
-          3500
+          4000
         );
       } catch (error) {
         handleError(error, $("gitlabDiscoveryMessage"));
@@ -5688,6 +5698,16 @@ async function createIssue() {
         })
       );
 
+      addGitLabRequiredLabelJobToBatch(
+        batch,
+        {
+          issueId:issueRef.id,
+          issueTitle:title,
+          externalTaskUrl:gitlabUrl,
+          requestedBy:actor
+        }
+      );
+
       pendingCreatedIssueId = issueRef.id;
       await batch.commit();
 
@@ -5695,7 +5715,7 @@ async function createIssue() {
       $("newIssueUrl").value = "";
       $("newIssueDescription").value = "";
       closeDialog("issueDialog");
-      toast("Задача добавлена.", "success");
+      toast("Задача добавлена. Для GitLab-задачи label estimate::required поставлен в очередь.", "success");
     } catch (error) {
       pendingCreatedIssueId = null;
       handleError(error, target);
@@ -8200,6 +8220,111 @@ function configuredGitLabIntegration() {
       config.jobsCollection || "gitlab_jobs"
     ).trim() || "gitlab_jobs"
   };
+}
+
+const TEAM_POKER_ESTIMATE_REQUIRED_LABEL=
+  "estimate::required";
+
+function gitLabRequiredLabelJobId({
+  sessionId,
+  issueId
+}) {
+  return [
+    sessionId,
+    issueId,
+    "estimate_required"
+  ].join("__");
+}
+
+function buildGitLabRequiredLabelJob({
+  issueId,
+  issueTitle,
+  externalTaskUrl,
+  requestedBy
+}) {
+  const config=configuredGitLabIntegration();
+  const gitlabUrl=String(
+    externalTaskUrl||""
+  ).trim();
+
+  if(!config||!gitlabUrl){
+    return null;
+  }
+
+  const jobId=gitLabRequiredLabelJobId({
+    sessionId:state.sessionId,
+    issueId
+  });
+
+  return {
+    id:jobId,
+    collectionName:config.jobsCollection,
+    data:{
+      schemaVersion:1,
+      type:"add_gitlab_label",
+      status:"pending",
+      idempotencyKey:jobId,
+
+      teamId:state.teamId,
+      sessionId:state.sessionId,
+      issueId,
+      issueTitle:String(
+        issueTitle||""
+      ),
+      externalTaskUrl:gitlabUrl,
+
+      gitlabLabel:
+        TEAM_POKER_ESTIMATE_REQUIRED_LABEL,
+      gitlabBaseUrl:
+        config.gitlabBaseUrl,
+
+      requestedByUid:
+        requestedBy.uid,
+      requestedByEmail:
+        requestedBy.email,
+      requestedByDisplayName:
+        requestedBy.displayName,
+      requestedAt:serverTimestamp(),
+      updatedAt:serverTimestamp(),
+      attempts:0
+    }
+  };
+}
+
+function addGitLabRequiredLabelJobToBatch(
+  batch,
+  {
+    issueId,
+    issueTitle,
+    externalTaskUrl,
+    requestedBy
+  }
+) {
+  const job=buildGitLabRequiredLabelJob({
+    issueId,
+    issueTitle,
+    externalTaskUrl,
+    requestedBy
+  });
+
+  if(!job){
+    return false;
+  }
+
+  const jobRef=doc(
+    db,
+    "teams",
+    state.teamId,
+    job.collectionName,
+    job.id
+  );
+
+  batch.set(
+    jobRef,
+    job.data
+  );
+
+  return true;
 }
 
 function gitLabEstimateJobId({
