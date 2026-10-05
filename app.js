@@ -114,13 +114,19 @@ let bulkMoveInProgress = false;
 /*
   GitLab-статус фильтруется независимо для активных и оценённых задач.
   "__missing__" означает отсутствие workflow statusLabel в Team_calculator.
-*/
-const GITLAB_STATUS_FILTER_NOT_READY_PROD =
-  "__not_ready_to_prod__";
 
+  null = выбраны все доступные статусы.
+  Set = явный набор выбранных статусов. Задача попадает в список,
+  если её статус входит хотя бы в один выбранный статус (OR / объединение).
+*/
 const issueGitLabStatusFilters = {
-  active: "all",
-  estimated: "all"
+  active: null,
+  estimated: null
+};
+
+const issueGitLabStatusFilterMenusOpen = {
+  active: false,
+  estimated: false
 };
 
 /*
@@ -1064,8 +1070,10 @@ function clearDeliveryStatusRefreshListener() {
 }
 
 function resetIssueGitLabStatusFilters() {
-  issueGitLabStatusFilters.active = "all";
-  issueGitLabStatusFilters.estimated = "all";
+  issueGitLabStatusFilters.active = null;
+  issueGitLabStatusFilters.estimated = null;
+  issueGitLabStatusFilterMenusOpen.active = false;
+  issueGitLabStatusFilterMenusOpen.estimated = false;
 }
 
 function clearVoteListeners() {
@@ -2523,20 +2531,29 @@ function startSessionsListener() {
         .map(sessionDoc => ({ id: sessionDoc.id, ...sessionDoc.data() }))
         .sort((a, b) => timestampValue(b.createdAt) - timestampValue(a.createdAt));
 
-      const storedSessionId = localStorage.getItem(`planningPoker.firebase.sessionId.${state.teamId}`);
       const linkedSessionId = pendingTaskLink?.teamId === state.teamId
         ? pendingTaskLink.sessionId
         : null;
+
+      const newestUnfinishedSession =
+        state.sessions.find(
+          session => session.status !== "finished"
+        )
+        || null;
+
+      const newestFinishedSession =
+        state.sessions.find(
+          session => session.status === "finished"
+        )
+        || null;
 
       const nextSessionId = linkedSessionId && state.sessions.some(session => session.id === linkedSessionId)
         ? linkedSessionId
         : state.sessions.some(session => session.id === state.sessionId)
           ? state.sessionId
-          : state.sessions.some(session => session.id === storedSessionId)
-            ? storedSessionId
-            : state.sessions.find(session => session.status === "active")?.id
-              || state.sessions[0]?.id
-              || null;
+          : newestUnfinishedSession?.id
+            || newestFinishedSession?.id
+            || null;
 
       renderSessions();
 
@@ -4187,40 +4204,43 @@ function gitLabStatusFilterLabel(value) {
 
 function issueMatchesGitLabStatusFilter(
   issue,
-  filterValue
+  selectedStatuses
 ) {
-  if(
-    !filterValue
-    ||filterValue === "all"
-  ){
+  if (!(selectedStatuses instanceof Set)) {
     return true;
   }
 
-  if(
-    filterValue
-    ===GITLAB_STATUS_FILTER_NOT_READY_PROD
-  ){
-    const normalizedStatus=
-      issueGitLabWorkflowStatus(issue)
-        .trim()
-        .toLocaleLowerCase("ru");
-
-    /*
-      В GitLab статус содержит emoji после текста
-      "Ready to PROD". Поэтому сравниваем по началу строки,
-      а не по полному точному значению.
-    */
-    return !normalizedStatus.startsWith(
-      "ready to prod"
-    );
-  }
-
-  return (
+  return selectedStatuses.has(
     issueGitLabWorkflowStatus(issue)
-      ===filterValue
   );
 }
 
+function normalizeIssueGitLabStatusFilter(
+  filterKey,
+  issues
+) {
+  const current =
+    issueGitLabStatusFilters[filterKey];
+
+  if (!(current instanceof Set)) {
+    return;
+  }
+
+  const available =
+    new Set(
+      gitLabStatusFilterOptions(issues)
+    );
+
+  const next =
+    new Set(
+      [...current].filter(
+        value => available.has(value)
+      )
+    );
+
+  issueGitLabStatusFilters[filterKey] =
+    next;
+}
 function gitLabStatusFilterOptions(issues) {
   return [
     ...new Set(
@@ -4646,45 +4666,56 @@ function renderIssueGroup(
   const options =
     gitLabStatusFilterOptions(sourceIssues);
 
-  let selected =
-    issueGitLabStatusFilters[filterKey]
-    ||"all";
+  const selected =
+    issueGitLabStatusFilters[filterKey];
 
-  if (
-    selected !== "all"
-    &&selected
-      !==GITLAB_STATUS_FILTER_NOT_READY_PROD
-    &&!options.includes(selected)
-  ) {
-    selected = "all";
-    issueGitLabStatusFilters[filterKey] =
-      "all";
-  }
+  const allSelected =
+    !(selected instanceof Set)
+    || (
+      selected.size === options.length
+      && options.every(
+        value => selected.has(value)
+      )
+    );
 
-  const filterOptions = [
-    '<option value="all">Все статусы GitLab</option>',
-    `<option
-      value="${GITLAB_STATUS_FILTER_NOT_READY_PROD}"
-      ${
-        selected
-          ===GITLAB_STATUS_FILTER_NOT_READY_PROD
-            ?"selected"
-            :""
-      }
-    >
-      Все кроме Ready to PROD
-    </option>`,
-    ...options.map(value=>`
-      <option
-        value="${escapeHtml(value)}"
-        ${value===selected ? "selected" : ""}
-      >
-        ${escapeHtml(
-          gitLabStatusFilterLabel(value)
-        )}
-      </option>
-    `)
-  ].join("");
+  const selectedCount =
+    selected instanceof Set
+      ?options.filter(
+          value => selected.has(value)
+        ).length
+      :options.length;
+
+  const filterSummary =
+    allSelected
+      ?"Все статусы GitLab"
+      :`Статусы: ${selectedCount}`;
+
+  const filterOptions = options
+    .map(value=>{
+      const checked =
+        allSelected
+        || (
+          selected instanceof Set
+          &&selected.has(value)
+        );
+
+      return `
+        <label class="issue-status-filter-option">
+          <input
+            type="checkbox"
+            data-issue-status-filter-value="${escapeHtml(value)}"
+            data-issue-status-filter-key="${escapeHtml(filterKey)}"
+            ${checked ? "checked" : ""}
+          >
+          <span>
+            ${escapeHtml(
+              gitLabStatusFilterLabel(value)
+            )}
+          </span>
+        </label>
+      `;
+    })
+    .join("");
 
   const countText =
     filteredIssues.length === sourceIssues.length
@@ -4701,13 +4732,30 @@ function renderIssueGroup(
           </span>
         </div>
 
-        <select
+        <details
           class="issue-gitlab-status-filter"
-          data-issue-status-filter="${escapeHtml(filterKey)}"
-          aria-label="Фильтр ${escapeHtml(title)} по статусу GitLab"
+          data-issue-status-filter-menu="${escapeHtml(filterKey)}"
+          ${issueGitLabStatusFilterMenusOpen[filterKey] ? "open" : ""}
         >
-          ${filterOptions}
-        </select>
+          <summary>
+            ${escapeHtml(filterSummary)}
+          </summary>
+
+          <div class="issue-status-filter-menu">
+            <label class="issue-status-filter-option issue-status-filter-all">
+              <input
+                type="checkbox"
+                data-issue-status-filter-all="${escapeHtml(filterKey)}"
+                ${allSelected ? "checked" : ""}
+              >
+              <span>Выбрать все</span>
+            </label>
+
+            <div class="issue-status-filter-options">
+              ${filterOptions}
+            </div>
+          </div>
+        </details>
       </div>
 
       <div class="issue-list-group-items">
@@ -4716,13 +4764,12 @@ function renderIssueGroup(
             ?filteredIssues
               .map(issueListItemHtml)
               .join("")
-            :'<div class="issue-filter-empty">Нет задач с выбранным статусом</div>'
+            :'<div class="issue-filter-empty">Нет задач с выбранными статусами</div>'
         }
       </div>
     </section>
   `;
 }
-
 function renderIssues() {
   const root = $("issueList");
 
@@ -4745,6 +4792,16 @@ function renderIssues() {
 
   const estimatedIssues = state.issues.filter(
     issue => issue.status === "estimated"
+  );
+
+  normalizeIssueGitLabStatusFilter(
+    "active",
+    activeIssues
+  );
+
+  normalizeIssueGitLabStatusFilter(
+    "estimated",
+    estimatedIssues
   );
 
   const filteredActiveIssues =
@@ -4781,14 +4838,36 @@ function renderIssues() {
   ].join("");
 
   root.querySelectorAll(
-    "[data-issue-status-filter]"
-  ).forEach(select=>{
-    select.addEventListener(
+    "[data-issue-status-filter-menu]"
+  ).forEach(details=>{
+    details.addEventListener(
+      "toggle",
+      event=>{
+        const key=String(
+          event.currentTarget
+            .dataset.issueStatusFilterMenu
+          ||""
+        ).trim();
+
+        if(
+          ["active","estimated"].includes(key)
+        ){
+          issueGitLabStatusFilterMenusOpen[key]=
+            event.currentTarget.open;
+        }
+      }
+    );
+  });
+
+  root.querySelectorAll(
+    "[data-issue-status-filter-value]"
+  ).forEach(checkbox=>{
+    checkbox.addEventListener(
       "change",
       event=>{
         const key=String(
           event.currentTarget
-            .dataset.issueStatusFilter
+            .dataset.issueStatusFilterKey
           ||""
         ).trim();
 
@@ -4798,8 +4877,79 @@ function renderIssues() {
           return;
         }
 
+        const menu =
+          event.currentTarget.closest(
+            "[data-issue-status-filter-menu]"
+          );
+
+        if(!menu)return;
+
+        const next =
+          new Set(
+            [
+              ...menu.querySelectorAll(
+                "[data-issue-status-filter-value]:checked"
+              )
+            ].map(
+              input=>
+                input.dataset.issueStatusFilterValue
+            )
+          );
+
+        issueGitLabStatusFilters[key]=next;
+        issueGitLabStatusFilterMenusOpen[key]=true;
+
+        renderIssues();
+      }
+    );
+  });
+
+  root.querySelectorAll(
+    "[data-issue-status-filter-all]"
+  ).forEach(checkbox=>{
+    const key=String(
+      checkbox.dataset.issueStatusFilterAll
+      ||""
+    ).trim();
+
+    if(
+      !["active","estimated"].includes(key)
+    ){
+      return;
+    }
+
+    const menu =
+      checkbox.closest(
+        "[data-issue-status-filter-menu]"
+      );
+
+    const optionInputs =
+      menu
+        ?[
+            ...menu.querySelectorAll(
+              "[data-issue-status-filter-value]"
+            )
+          ]
+        :[];
+
+    const checkedCount =
+      optionInputs.filter(
+        input=>input.checked
+      ).length;
+
+    checkbox.indeterminate =
+      checkedCount>0
+      &&checkedCount<optionInputs.length;
+
+    checkbox.addEventListener(
+      "change",
+      event=>{
         issueGitLabStatusFilters[key]=
-          event.currentTarget.value||"all";
+          event.currentTarget.checked
+            ?null
+            :new Set();
+
+        issueGitLabStatusFilterMenusOpen[key]=true;
 
         renderIssues();
       }
