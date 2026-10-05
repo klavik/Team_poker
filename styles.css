@@ -304,17 +304,93 @@ textarea { min-height: 95px; resize: vertical; }
 }
 
 .issue-gitlab-status-filter {
+  position: relative;
   width: auto;
-  max-width: 158px;
+  max-width: 190px;
   min-width: 0;
-  padding: 5px 28px 5px 8px;
+  border: 1px solid var(--border);
   border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
   font-size: 11px;
   font-weight: 700;
   text-transform: none;
   letter-spacing: normal;
+}
+
+.issue-gitlab-status-filter > summary {
+  display: block;
+  padding: 6px 28px 6px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.issue-gitlab-status-filter > summary::-webkit-details-marker {
+  display: none;
+}
+
+.issue-gitlab-status-filter > summary::after {
+  content: "▾";
+  position: absolute;
+  top: 6px;
+  right: 9px;
+  color: var(--muted);
+}
+
+.issue-gitlab-status-filter[open] > summary::after {
+  content: "▴";
+}
+
+.issue-status-filter-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  right: 0;
+  width: min(260px, calc(100vw - 32px));
+  max-height: 320px;
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 12px 30px rgba(23, 32, 51, .16);
+}
+
+.issue-status-filter-options {
+  display: grid;
+  gap: 2px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.issue-status-filter-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 7px;
+  border-radius: 7px;
+  cursor: pointer;
   color: var(--text);
-  background-color: var(--surface);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.issue-status-filter-option:hover {
+  background: #f3f5f9;
+}
+
+.issue-status-filter-option input {
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+}
+
+.issue-status-filter-all {
+  font-weight: 800;
 }
 
 .issue-filter-empty {
@@ -1558,6 +1634,12 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .issue-gitlab-status-filter {
     width: 100%;
     max-width: none;
+  }
+
+  .issue-status-filter-menu {
+    left: 0;
+    right: auto;
+    width: min(100%, 320px);
   }
 }
 
