@@ -350,7 +350,7 @@ textarea { min-height: 95px; resize: vertical; }
   z-index: 30;
   top: calc(100% + 5px);
   right: 0;
-  width: 320px;
+  width: 230px;
   max-width: calc(100vw - 32px);
   max-height: none;
   overflow: visible;
@@ -1654,7 +1654,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .issue-status-filter-menu {
     left: 0;
     right: auto;
-    width: 320px;
+    width: 230px;
     max-width: calc(100vw - 32px);
   }
 }
