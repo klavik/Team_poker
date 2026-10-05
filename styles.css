@@ -350,9 +350,10 @@ textarea { min-height: 95px; resize: vertical; }
   z-index: 30;
   top: calc(100% + 5px);
   right: 0;
-  width: min(260px, calc(100vw - 32px));
-  max-height: 320px;
-  overflow: auto;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  max-height: none;
+  overflow: visible;
   padding: 7px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -371,6 +372,8 @@ textarea { min-height: 95px; resize: vertical; }
   display: flex;
   align-items: flex-start;
   gap: 7px;
+  width: 100%;
+  margin: 0;
   padding: 6px 7px;
   border-radius: 7px;
   cursor: pointer;
@@ -378,6 +381,7 @@ textarea { min-height: 95px; resize: vertical; }
   font-size: 11px;
   font-weight: 600;
   line-height: 1.25;
+  box-sizing: border-box;
 }
 
 .issue-status-filter-option:hover {
@@ -386,7 +390,18 @@ textarea { min-height: 95px; resize: vertical; }
 
 .issue-status-filter-option input {
   flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
   margin: 1px 0 0;
+  padding: 0;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.issue-status-filter-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .issue-status-filter-all {
@@ -1639,7 +1654,8 @@ dialog::backdrop { background: rgba(15, 23, 42, .48); }
   .issue-status-filter-menu {
     left: 0;
     right: auto;
-    width: min(100%, 320px);
+    width: 320px;
+    max-width: calc(100vw - 32px);
   }
 }
 
