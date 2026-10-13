@@ -136,13 +136,25 @@ function setStatus(
 }
 
 function configured() {
-  const baseUrl = String(config.gitlabBaseUrl || "").trim();
-
+  // GitLab вызывается через mac_connector; его адрес задан локально.
   return Boolean(
-    config.enabled !== false
-    && baseUrl
-    && !baseUrl.includes("REPLACE_")
+    window.GITLAB_CONNECTOR_INTEGRATION
+    && config.enabled !== false
   );
+}
+
+// Для формата Firestore-заданий сохраняем хост из ссылки на задачу.
+// Ровно такой же способ используется в app.js Team_poker v1.3.16.
+function gitLabBaseUrlFromTaskUrl(externalTaskUrl) {
+  try {
+    const url = new URL(String(externalTaskUrl || "").trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    return url.origin;
+  } catch {
+    return "";
+  }
 }
 
 function canManualRetry() {
@@ -234,9 +246,9 @@ async function retryJob(ref, descriptor) {
         gitlabLabel: String(
           config.label || "estimate::done"
         ).trim() || "estimate::done",
-        gitlabBaseUrl: String(
-          config.gitlabBaseUrl || ""
-        ).trim().replace(/\/+$/, ""),
+        gitlabBaseUrl: gitLabBaseUrlFromTaskUrl(
+          descriptor.externalTaskUrl
+        ),
 
         requestedByUid: currentUser.uid,
         requestedByEmail: currentUser.email || "",
@@ -306,7 +318,7 @@ async function retryJob(ref, descriptor) {
 async function render() {
   if (!configured()) {
     setStatus(
-      "GitLab-интеграция не настроена: укажите gitlabBaseUrl в gitlab-integration-config.js.",
+      "GitLab-интеграция отключена или не настроена: проверьте gitlab-integration-config.js.",
       "error"
     );
     return;
