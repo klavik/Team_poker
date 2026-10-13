@@ -8344,25 +8344,13 @@ async function finalizeEstimate() {
 
 
 function configuredGitLabIntegration() {
-  const config = window.GITLAB_CONNECTOR_INTEGRATION || {};
+  const config = window.GITLAB_CONNECTOR_INTEGRATION;
 
-  if (config.enabled === false) {
-    return null;
-  }
-
-  const gitlabBaseUrl = String(
-    config.gitlabBaseUrl || ""
-  ).trim();
-
-  if (
-    !gitlabBaseUrl
-    || gitlabBaseUrl.includes("REPLACE_")
-  ) {
+  if (!config || config.enabled === false) {
     return null;
   }
 
   return {
-    gitlabBaseUrl: gitlabBaseUrl.replace(/\/+$/, ""),
     label: String(
       config.label || "estimate::done"
     ).trim() || "estimate::done",
@@ -8370,6 +8358,20 @@ function configuredGitLabIntegration() {
       config.jobsCollection || "gitlab_jobs"
     ).trim() || "gitlab_jobs"
   };
+}
+
+// Адрес для задания берём из ссылки на задачу, а не из публичного конфига.
+// mac_connector самостоятельно проверяет его по своей локальной конфигурации.
+function gitLabBaseUrlFromTaskUrl(externalTaskUrl) {
+  try {
+    const url = new URL(String(externalTaskUrl || "").trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    return url.origin;
+  } catch {
+    return "";
+  }
 }
 
 const TEAM_POKER_ESTIMATE_REQUIRED_LABEL=
@@ -8426,7 +8428,7 @@ function buildGitLabRequiredLabelJob({
       gitlabLabel:
         TEAM_POKER_ESTIMATE_REQUIRED_LABEL,
       gitlabBaseUrl:
-        config.gitlabBaseUrl,
+        gitLabBaseUrlFromTaskUrl(gitlabUrl),
 
       requestedByUid:
         requestedBy.uid,
@@ -8533,7 +8535,7 @@ function buildGitLabEstimateJob({
       finalEstimate: Number(finalEstimate),
       estimateVersion: Number(estimateVersion),
       gitlabLabel: config.label,
-      gitlabBaseUrl: config.gitlabBaseUrl,
+      gitlabBaseUrl: gitLabBaseUrlFromTaskUrl(externalTaskUrl),
 
       requestedByUid: finalizedBy.uid,
       requestedByEmail: finalizedBy.email,
